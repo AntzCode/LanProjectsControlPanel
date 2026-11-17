@@ -270,6 +270,15 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
                 self.dot.set_tooltip_text("Click to start" if row.action == "up" else "Click to stop")
             self.label.set_tooltip_text("\n".join(x for x in (row.why, row.url, row.address and
                                                               f"address {row.address}") if x))
+            if row.containers:
+                across = f"across its {row.containers} running container{'s' if row.containers != 1 else ''}"
+                self.cpu.set_tooltip_text(f"CPU use, added up {across}.\n100% = one full CPU core, so a busy "
+                                          "project can go above 100%.")
+                self.mem.set_tooltip_text(f"Memory (RAM) in use, added up {across}.\n"
+                                          "GB = 1,000,000,000 bytes.")
+            else:
+                self.cpu.set_tooltip_text("CPU use: nothing of this project is running")
+                self.mem.set_tooltip_text("Memory (RAM) in use: nothing of this project is running")
             if stats or row.cpu is None:
                 for label, text in ((self.cpu, None if row.cpu is None else f"{row.cpu:.1f}%"),
                                     (self.mem, None if row.mem_gb is None else f"{row.mem_gb:.1f} GB")):
