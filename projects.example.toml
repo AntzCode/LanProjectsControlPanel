@@ -1,0 +1,27 @@
+# Copy to projects.toml (git-ignored) or let `./dev add` create it. Everything under [settings] is
+# optional; the values shown are the defaults.
+#
+# [settings]
+# domain = "localhost"       # sites are <name>.localhost
+# https = true               # Caddy's local CA; false serves plain http
+# http_port = 80
+# https_port = 443
+# bind = "127.0.0.1"
+# port_range = [8100, 8999]  # where project ports are assigned from (then remembered)
+# wait = 60                  # seconds to wait for a started project's port to open
+
+[projects.nan]
+dir = "~/Projects/GitHub/AntzCode/NaNPhone"
+# Optional, defaults shown:
+# host = "nan.localhost"
+# port = 8101                         # otherwise assigned once and remembered
+# up = "./dev up -p {port}"           # {port} {host} {url} {name} are filled in
+# down = "./dev down"
+# logs = "./dev logs"
+
+# A project with no ./dev can be driven by its compose file directly:
+# [projects.blog]
+# dir = "~/Projects/blog"
+# up = "WEB_PORT={port} docker compose up -d"
+# down = "docker compose stop"
+# logs = "docker compose logs -f"

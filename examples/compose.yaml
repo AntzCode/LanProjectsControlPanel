@@ -1,0 +1,13 @@
+# Reference compose file for a project that works with LanProjectsControlPanel.
+# The only change from a normal project is the port line: the host port comes from WEB_PORT
+# (set by ./dev from -p) and falls back to the project's usual port, so standalone use is unchanged.
+services:
+  web:
+    image: caddy:2
+    command: caddy respond --listen :80 "Hello from ${PROJECT_NAME:-example} (${LPCP_URL:-standalone})"
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 2s
+      retries: 15

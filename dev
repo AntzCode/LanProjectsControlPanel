@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 AntzCode
+# LanProjectsControlPanel launcher: ./dev up | down | restart | ls | logs | open | add | rm | proxy | trust | doctor
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from lpcp import main  # noqa: E402
+
+sys.exit(main())

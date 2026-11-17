@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Reference ./dev for a project that works with LanProjectsControlPanel (lpcp).
+#
+#   ./dev up            as always: the project's usual port
+#   ./dev up -p 8101    the web service on 127.0.0.1:8101 instead (what lpcp calls)
+#   ./dev down | logs
+#
+# Copy the option parsing below into the project's existing ./dev; do not replace what it already does.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+cmd="${1:-}"
+shift || true
+
+# -p / --port PORT: only changes WEB_PORT; with no -p nothing changes.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--port) export WEB_PORT="${2:?$1 needs a port number}"; shift 2 ;;
+    *) break ;;
+  esac
+done
+
+case "$cmd" in
+  up)   docker compose up -d --wait ;;
+  down) docker compose stop ;;
+  logs) exec docker compose logs -f "$@" ;;
+  *)    echo "usage: ./dev up [-p PORT] | down | logs" >&2; exit 2 ;;
+esac
