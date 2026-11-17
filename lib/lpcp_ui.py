@@ -466,7 +466,7 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
 
     class PanelWindow(Gtk.ApplicationWindow):
         def __init__(self, app, XApp=None):
-            super().__init__(application=app, title="LPCP")
+            super().__init__(application=app, title="Lan Projects Control Panel")
             self.set_default_size(WIDTH, -1)
             self.set_border_width(6)
             try:
