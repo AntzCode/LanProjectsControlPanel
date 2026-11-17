@@ -159,16 +159,24 @@ and `LPCP_URL` in the project's environment, so an app can build absolute URLs a
 
 ## Making a project compatible
 
-The contract is small, and a project that follows it still runs exactly as before without this tool:
+The contract is small, and a project that follows it still runs on its own without this tool:
 
-1. `./dev up --bind=IP` (also `--bind IP`) publishes the project's ports on IP instead of 127.0.0.1. With no
-   `--bind`, nothing changes.
-2. If the project also has `--lan` (publish on every address), `--bind` and `--lan` are mutually exclusive:
-   using both is an error.
-3. In compose, take the address from a variable that defaults to the old one:
-   `ports: ["${BIND:-127.0.0.1}:80:80"]`, on every published port. Keep the port numbers as they are.
-4. `./dev down` stops it (and `./dev logs` follows its logs, optionally).
-5. Optional: read `LPCP_URL` as the app's public URL when it is set.
+1. **Plain `./dev up` publishes on 127.0.0.1**: this machine only, always. In compose, every published port is
+   `"${BIND:-127.0.0.1}:<port>:<port>"`. Keep the port numbers; never publish a port without an address
+   (`"80:80"` means every address).
+2. `./dev up --bind=IP` (also `--bind IP`) publishes the same ports on IP instead. This is what lpcp calls.
+3. `./dev up --lan` publishes on every address (0.0.0.0), for phones and tablets. It's the only way to get
+   0.0.0.0. `--bind` and `--lan` together is an error.
+4. `./dev up --host=NAME` (also `--host NAME`) makes the project answer to NAME: its web server's site name,
+   base URL, allowed hosts and certificate. It combines with any of the above. `./dev up --host phuppi.loc` is
+   reachable at `http://phuppi.loc` once `/etc/hosts` has `127.0.0.1 phuppi.loc` (or the `--bind` address).
+   `*.localhost` names need no entry.
+5. `./dev down` stops it (and `./dev logs` follows its logs, optionally).
+6. Optional: read `LPCP_URL` as the app's public URL when it is set.
+
+If a project published ports on every address before, plain `./dev up` becomes this-machine-only, and
+`./dev up --lan` gives the old network access. If it accepts `--host`, register it with
+`--up './dev up --bind={bind} --host={host}'`, so it answers to its `<name>.localhost` name behind the proxy.
 
 `examples/dev` and `examples/compose.yaml` are a complete, runnable reference (a web server and a postgres).
 A project with no `./dev` can be registered with a custom command:

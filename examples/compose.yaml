@@ -1,11 +1,16 @@
 # Reference compose file for a project that works with LanProjectsControlPanel.
-# The only change from a normal project: every published port is on ${BIND:-127.0.0.1}. ./dev sets BIND from
-# --bind; without it the ports are on 127.0.0.1 as usual, so standalone use is unchanged. The port numbers
-# never change: lpcp gives each project its own address, so two projects can both publish 80 and 5432.
+# Two things differ from a plain project:
+# - The web port is on ${BIND:-127.0.0.1}: this machine only unless ./dev says otherwise (--bind=IP, or --lan for
+#   0.0.0.0). Private ports (the database) are on ${PRIVATE_BIND:-127.0.0.1}, which follows --bind only to another
+#   loopback address, never onto the network. Never publish a port without an address ("80:80" means every
+#   address). The port numbers never change: lpcp gives each project its own address, so two projects can both
+#   publish 80 and 5432.
+# - The site's name comes from ${SITE_HOST:-localhost} (./dev --host=NAME). A real web server would use it as
+#   its site address or server_name, and the app as its base URL; this demo just reports it.
 services:
   web:
     image: caddy:2.11.9
-    command: caddy respond --listen :80 "Hello from ${PROJECT_NAME:-example} (${LPCP_URL:-standalone})"
+    command: caddy respond --listen :80 "Hello from ${PROJECT_NAME:-example} at ${SITE_HOST:-localhost} (${LPCP_URL:-standalone})"
     ports:
       - "${BIND:-127.0.0.1}:80:80"
     healthcheck:
@@ -18,7 +23,7 @@ services:
     environment:
       POSTGRES_PASSWORD: example   # development only
     ports:
-      - "${BIND:-127.0.0.1}:5432:5432"
+      - "${PRIVATE_BIND:-127.0.0.1}:5432:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 2s
