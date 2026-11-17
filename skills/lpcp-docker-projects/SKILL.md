@@ -47,6 +47,16 @@ Rules:
 7. `./dev launch` opens the project's default entry point, normally its URL in the browser;
    `./dev launch --app=NAME` opens another one. `./dev config.launchers` lists them, and lpcp shows one launch
    button per launcher on the project's entry. See "Config API" and "Launchers" below.
+8. **The registered port is the project's front door.** lpcp's proxy sends `https://<name>.localhost` to the
+   one port the project is registered with (`--port`, default 80), so that port must be whatever routes
+   **every** path the browser uses: the app, object storage or bucket paths (presigned URLs point at the
+   site's own address), an API under a path, websockets, a CA download. A port that serves a single backend
+   (the app's container, say) loses every route handled by a reverse proxy in front of it, and the symptoms
+   are confusing: uploads that return 200 but store nothing, 404s on paths that work on the project's own
+   HTTPS port. If a router (Caddy, nginx, Traefik) exists, it owns that port, plain HTTP, with the same routes
+   as its HTTPS site, and the backends publish nothing. The proxy terminates TLS, so the router must trust
+   its `X-Forwarded-Proto` and `X-Forwarded-Host` and pass them on (in Caddy, `trusted_proxies` on the
+   plain-HTTP site, or the app will see `http` and build `http://` URLs that browsers block on an https page).
 
 About names and the hosts file:
 - `*.localhost` names need no hosts entry: they always resolve to 127.0.0.1. So `./dev up --host
@@ -61,7 +71,11 @@ About names and the hosts file:
 
 1. **Read first.** Open the project's `./dev` (or whatever starts it) and its compose file(s). List every
    published port and the address it's on, and where the app's hostname is configured (web server config,
-   `.env`, app settings). Note the web entry point's port (lpcp's `port`, default 80).
+   `.env`, app settings). Note the web entry point's port (lpcp's `port`, default 80), and check it is the
+   front door (rule 8): which service routes the app, storage and API paths, and does that service publish the
+   port you will register? If a router publishes only HTTPS (443) while the app publishes 80, tell the user:
+   the router needs a plain-HTTP site on 80 (and the app stops publishing it), or the project must be
+   registered with `--port 443 --no-proxy`, which needs its certificate trusted.
 2. **Compose:** on each published port, replace the address (`127.0.0.1:`, `0.0.0.0:`, or none) with
    `${BIND:-127.0.0.1}:`. The default is **always 127.0.0.1**, also for ports that had no address or 0.0.0.0
    before (those were open to the whole network). If any port used to be on every address, tell the user: plain
@@ -83,8 +97,8 @@ About names and the hosts file:
    `${BIND...}`. `./dev` sets PRIVATE_BIND only when `--bind` is another loopback address (127.*), so private
    ports move with the project under lpcp (no collisions) but never onto the network with `--lan` or a LAN
    `--bind`. Tell the user which ports you treated as private.
-7. **Register** (from the lpcp repo): `./dev add <name> <path-to-project>`, adding `--port N` if the web port
-   isn't 80.
+7. **Register** (from the lpcp repo): `./dev add <name> <path-to-project>`, adding `--port N` if the front
+   door (rule 8) isn't on 80.
    - If the project accepts `--host`, also add `--up './dev up --bind={bind} --host={host}'`, so it answers to
      its `<name>.localhost` name behind the proxy.
    - For a project with real hostnames, its own TLS, and public DNS pointing at this machine:
@@ -266,13 +280,18 @@ Do all of these. Leave nothing running that wasn't running before.
 5. **Two at once:** from the lpcp repo, `./dev up <name> <another>`, then `curl -k https://<name>.localhost`
    (or the project's own URL), and `./dev ls`. If `./dev up` reports a 0.0.0.0 holder, something was started
    with `--lan`: ask the user before stopping it.
-6. **Launchers**, with the project stopped: `./dev config.launchers | python3 -m json.tool` is valid JSON with
+6. **Front door**, through lpcp's proxy (`https://<name>.localhost`): request one path of each kind the
+   project routes, not only `/`: a storage or API path, and anything the app builds absolute URLs for. Each
+   must reach its own backend, and every absolute URL in a response (presigned URLs, redirects, `Location`
+   headers) must start with `https://<name>.localhost`, not `http://` or an internal name. Check the
+   router's access log if one answers and the content looks wrong.
+7. **Launchers**, with the project stopped: `./dev config.launchers | python3 -m json.tool` is valid JSON with
    at least one entry and nothing else on stdout, and every `class` is one of web, mail, db, logs, config,
    tool (or absent); `./dev config.nope` exits 2. `./dev launch --print` and
    `./dev launch --print --app=<app>` for each launcher print the expected URLs; `--app=nope` exits 2;
    `./dev launch` (without `--print`) exits 1 with a message. With the project up, `curl -ks` each printed URL
    gets the app. Don't open browser windows to test.
-7. `git diff` in the project should show only the port addresses, the hostname variable, the option parsing,
+8. `git diff` in the project should show only the port addresses, the hostname variable, the option parsing,
    the launch and config commands, and docs.
 
 ## Don't
@@ -280,6 +299,8 @@ Do all of these. Leave nothing running that wasn't running before.
 - Don't default any port to 0.0.0.0, or publish a port without an address (`"80:80"` means every address).
   0.0.0.0 is only for `--lan`.
 - Don't change port numbers, remove ports, or make `--bind` or `--host` required.
+- Don't register a port that serves one backend when a router in front of it handles other routes (rule 8):
+  register the router's plain-HTTP port, or `--port 443 --no-proxy`.
 - Don't edit `/etc/hosts` or other system files. Give the user the line to add.
 - Don't add `external` networks, labels, or any dependency on lpcp to the project. A project must start on a
   machine that has never heard of lpcp.

@@ -194,6 +194,14 @@ The contract is small, and a project that follows it still runs on its own witho
    `*.localhost` names need no entry.
 5. `./dev down` stops it (and `./dev logs` follows its logs, optionally).
 6. Optional: read `LPCP_URL` as the app's public URL when it is set.
+7. **The registered port is the front door.** lpcp's proxy sends `https://<name>.localhost` to the one port the
+   project is registered with (`--port`, default 80), so that port must route every path the browser uses: the
+   app, object storage (presigned URLs point at the site's own address), API paths, websockets. A port that
+   serves only the app's container loses the routes a reverse proxy in front of it handles (uploads return 200
+   but store nothing). If the project has a router (Caddy, nginx), it should own that port over plain HTTP, with
+   the same routes as its HTTPS site, trusting the proxy's `X-Forwarded-Proto` and `X-Forwarded-Host` so URLs
+   the app builds are `https://`. A project that can't do this registers with `--port 443 --no-proxy` instead
+   and its own certificate must be trusted.
 
 If a project published ports on every address before, plain `./dev up` becomes this-machine-only, and
 `./dev up --lan` gives the old network access. If it accepts `--host`, register it with
