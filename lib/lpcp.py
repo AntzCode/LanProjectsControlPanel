@@ -694,6 +694,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="check docker, addresses, ports and the registry")
     p = sub.add_parser("ui", help="open the control panel window (needs GTK 3 for Python)")
     p.add_argument("--install", action="store_true", help="add a launcher to the desktop's application menu")
+    p.add_argument("--tray", action="store_true", help="start as a tray icon that shows and hides the window "
+                   "(Linux Mint's XApp); with --install, also start it at login")
     return ap
 
 

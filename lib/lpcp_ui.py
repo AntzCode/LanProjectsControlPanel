@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 AntzCode
 """The control panel window (GTK 3): one row per registered project with a status dot (click to start or
-stop it), its name, and its CPU and memory use. `./dev ui` opens it; `./dev ui --install` adds a launcher to
-the desktop's application menu. Closing the window leaves every project as it is.
+stop it), its name, and its CPU and memory use. `./dev ui` opens it; `./dev ui --tray` puts an icon in the
+panel's tray instead, which shows and hides the window; `--install` adds a launcher to the desktop's
+application menu (and, with --tray, starts the icon at login). Closing the window leaves every project as it is.
 
-GTK is only needed here: the command line stays standard-library only.
+GTK is only needed here: the command line stays standard-library only. The tray icon uses XApp (Linux Mint);
+without it, --tray opens the window as usual.
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ import math
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import lpcp
@@ -37,23 +40,58 @@ CSS = b"""
 """
 
 
-def desktop_entry() -> str:
-    command = f'"{REPO / "dev"}" ui'
+SIDES = {0: "left", 1: "right", 2: "top", 3: "bottom"}   # Gtk.PositionType, as the tray reports the panel's side
+FOCUS_GRACE = 0.5       # s: a tray click this soon after the window lost focus still counts as "it was in front"
+
+
+def desktop_entry(tray: bool = False) -> str:
+    command = f'"{REPO / "dev"}" ui' + (" --tray" if tray else "")
     if os.environ.get("LPCP_HOME"):
         command = f'env "LPCP_HOME={lpcp.home()}" {command}'
     return "\n".join([
         "[Desktop Entry]", "Type=Application", "Name=LPCP",
         "GenericName=Docker project control panel",
         "Comment=Start and stop your local docker projects", f"Exec={command}", f"Icon={ICON}",
-        "Terminal=false", "Categories=Development;", f"StartupWMClass={WM_CLASS}", "StartupNotify=true", ""])
+        "Terminal=false", "Categories=Development;", f"StartupWMClass={WM_CLASS}",
+        f"StartupNotify={'false' if tray else 'true'}", ""])
 
 
-def install_launcher() -> Path:
+def install_launcher(tray: bool = False) -> list[str]:
+    """Write the menu launcher; with tray, also an autostart entry (removed again by a plain --install)."""
     apps = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "applications"
+    autostart = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "autostart" / "lpcp.desktop"
     apps.mkdir(parents=True, exist_ok=True)
-    path = apps / "lpcp.desktop"
-    path.write_text(desktop_entry(), encoding="utf-8")
-    return path
+    (apps / "lpcp.desktop").write_text(desktop_entry(tray), encoding="utf-8")
+    done = [f"Launcher written to {apps / 'lpcp.desktop'}"]
+    if tray:
+        autostart.parent.mkdir(parents=True, exist_ok=True)
+        autostart.write_text(desktop_entry(tray), encoding="utf-8")
+        done.append(f"Autostart entry written to {autostart}: the tray icon starts when you log in")
+    elif autostart.exists() and f'"{REPO / "dev"}" ui' in autostart.read_text(encoding="utf-8"):
+        autostart.unlink()
+        done.append(f"Autostart entry removed: {autostart}")
+    return done
+
+
+def anchor(point: tuple[int, int], side: str, monitor: tuple, size: tuple[int, int]):
+    """Where to put the window for a click on its tray icon, like a menu dropping from the icon.
+    `point` is what the tray reports: the panel's inner edge at the icon (top panel: the icon's left and bottom;
+    bottom: left and top; left: right and top; right: left and top). Kept on the monitor.
+    -> (gravity, x, y), (x, y) being the window corner named by the Gdk.Gravity."""
+    x, y = point
+    w, h = size
+    mx, my, mw, mh = monitor
+
+    def clamp(v, lo, hi):
+        return max(lo, min(v, hi))
+
+    if side == "top":
+        return "NORTH_WEST", clamp(x, mx, mx + mw - w), y
+    if side == "bottom":
+        return "SOUTH_WEST", clamp(x, mx, mx + mw - w), y
+    if side == "left":
+        return "NORTH_WEST", x, clamp(y, my, my + mh - h)
+    return "NORTH_EAST", x, clamp(y, my, my + mh - h)
 
 
 def place(pointer: tuple[int, int], geometry: tuple, workarea: tuple, size: tuple[int, int]):
@@ -106,31 +144,54 @@ def load_gtk():
     return Gdk, Gio, GLib, Gtk
 
 
+def load_xapp():
+    """XApp's StatusIcon, or None (not Linux Mint, or no tray on the panel) with the reason."""
+    try:
+        import gi
+        gi.require_version("XApp", "1.0")
+        from gi.repository import XApp
+    except (ImportError, ValueError):
+        return None, "the tray icon needs XApp (Linux Mint: gir1.2-xapp-1.0)"
+    if not XApp.StatusIcon.any_monitors():
+        return None, "no XApp tray on the panel (Linux Mint: add the 'XApp Status Applet' to a panel)"
+    return XApp, None
+
+
 def main(args) -> int:
+    tray = getattr(args, "tray", False)
     if getattr(args, "install", False):
-        path = install_launcher()
-        print(f"Launcher written to {path}\n"
-              "To put it on the MATE panel: open the Applications menu > Programming, right-click LPCP, and choose "
-              "'Add this launcher to panel'.")
+        print("\n".join(install_launcher(tray)))
+        if tray:
+            print("Start it now with: ./dev ui --tray")
+        else:
+            print("To put it on the MATE panel: open the Applications menu > Programming, right-click LPCP, and "
+                  "choose 'Add this launcher to panel'.")
         return 0
     Gdk, Gio, GLib, Gtk = load_gtk()
+    XApp = None
+    if tray:
+        XApp, why = load_xapp()
+        if XApp is None:
+            print(f"lpcp: {why}; opening the window instead", file=sys.stderr)
     GLib.set_prgname(WM_CLASS)
     Gdk.set_program_class(WM_CLASS)
     build_classes(Gdk, GLib, Gtk)
     flags = Gio.ApplicationFlags.NON_UNIQUE if os.environ.get("LPCP_HOME") else Gio.ApplicationFlags.FLAGS_NONE
     app = Gtk.Application(application_id=APP_ID, flags=flags)
+    app.panel = None
 
     def activate(application):
-        # Runs on every launch: a second launch hands over to this one, so each click on the panel launcher
-        # brings the window to the launcher.
-        window = application.get_active_window()
-        new = window is None
-        if new:
-            window = Panel(application)
-        window.move_to_launcher()
-        if new:
-            window.show_all()
-        window.present()
+        # Runs on every launch: a second launch (any mode) hands over to this one, so each click on a panel
+        # launcher brings the window to the launcher, or hides it when it's in front.
+        if application.panel is None:
+            application.panel = Panel(application, XApp)
+            if XApp is not None:
+                application.hold()      # stay alive with the window hidden: the tray icon is the way back
+                return
+            application.panel.move_to_launcher()
+            application.panel.reveal(Gdk.CURRENT_TIME)
+            return
+        application.panel.launcher_click()
 
     app.connect("activate", activate)
     return app.run([sys.argv[0]])
@@ -216,8 +277,36 @@ def build_classes(Gdk, GLib, Gtk) -> None:
                     context = label.get_style_context()
                     (context.remove_class if text else context.add_class)("lpcp-dim")
 
+    class Tray:
+        """The tray icon (XApp): left click shows or hides the window, right click opens a small menu."""
+
+        def __init__(self, panel, XApp):
+            self.panel, self.XApp = panel, XApp
+            self.icon = XApp.StatusIcon.new_with_name(WM_CLASS)
+            self.icon.set_icon_name(str(ICON))           # XApp takes an icon name or a file path
+            self.icon.set_tooltip_text("LPCP: click to show or hide")
+            self.icon.connect("button-release-event", self.on_release)
+            self.icon.connect("state-changed", self.on_state)
+            menu = Gtk.Menu()
+            for label, handler in (("Open", lambda item: panel.reveal(Gdk.CURRENT_TIME)),
+                                   ("Quit LPCP", lambda item: panel.get_application().quit())):
+                item = Gtk.MenuItem(label=label)
+                item.connect("activate", handler)
+                menu.append(item)
+            menu.show_all()
+            self.icon.set_secondary_menu(menu)
+            self.icon.set_visible(True)
+
+        def on_release(self, icon, x, y, button, timestamp, panel_position):
+            if button == 1:
+                self.panel.tray_click(x, y, SIDES.get(panel_position, "top"), timestamp)
+
+        def on_state(self, icon, state):
+            if state == self.XApp.StatusIconState.NO_SUPPORT:   # the tray went away: don't leave the window lost
+                self.panel.tray_lost()
+
     class PanelWindow(Gtk.ApplicationWindow):
-        def __init__(self, app):
+        def __init__(self, app, XApp=None):
             super().__init__(application=app, title="LPCP")
             self.set_default_size(WIDTH, -1)
             self.set_border_width(6)
@@ -249,9 +338,75 @@ def build_classes(Gdk, GLib, Gtk) -> None:
             box.pack_start(self.status, False, False, 0)
             self.add(box)
             self.connect("destroy", self.on_destroy)
+            self.connect("delete-event", self.on_close)
+            self.focus_lost_at = 0.0
+            self.connect("focus-out-event", self.on_focus_out)
 
             self.wake = threading.Event()
+            self.shown = threading.Event()      # cleared while hidden in the tray: no docker calls then
+            self.tray = Tray(self, XApp) if XApp is not None else None
+            if self.tray is None:
+                self.shown.set()
             threading.Thread(target=self.poll, daemon=True).start()
+
+        # ---- showing and hiding
+
+        def reveal(self, timestamp) -> None:
+            self.show_all()
+            self.present_with_time(timestamp)
+            if not self.shown.is_set():
+                self.shown.set()
+                self.wake.set()                 # read docker straight away
+
+        def conceal(self) -> None:
+            self.hide()
+            self.shown.clear()
+
+        def in_front(self) -> bool:
+            return self.get_visible() and (self.is_active() or time.monotonic() - self.focus_lost_at < FOCUS_GRACE)
+
+        def tray_click(self, x: int, y: int, side: str, timestamp: int) -> None:
+            if self.in_front():
+                self.conceal()
+                return
+            monitor = self.get_display().get_monitor_at_point(x, y)
+            g = monitor.get_geometry()
+            gdk_window = self.get_window()
+            if gdk_window is not None and self.get_mapped():
+                frame = gdk_window.get_frame_extents()
+                size = (frame.width, frame.height)
+            else:
+                w, h = self.get_size()
+                size = (w + 2, h + 32)          # not shown: allow for the window manager's frame
+            gravity, wx, wy = anchor((x, y), side, (g.x, g.y, g.width, g.height), size)
+            self.set_gravity(getattr(Gdk.Gravity, gravity))
+            self.move(wx, wy)
+            self.reveal(timestamp)
+            self.move(wx, wy)       # again once shown: a window shown before reappears where it was otherwise
+
+        def launcher_click(self) -> None:
+            """Another launch handed over to this window: hide it if it's in front, else bring it to the launcher."""
+            if self.get_visible() and self.is_active():
+                self.conceal() if self.tray else self.iconify()
+                return
+            self.move_to_launcher()
+            self.reveal(Gdk.CURRENT_TIME)
+
+        def tray_lost(self) -> None:
+            if self.tray is not None:
+                self.tray = None
+                self.get_application().release()    # closing the window quits again
+                self.reveal(Gdk.CURRENT_TIME)
+
+        def on_close(self, *_) -> bool:
+            if self.tray is not None:
+                self.conceal()
+                return True                     # keep running in the tray
+            return False
+
+        def on_focus_out(self, *_) -> bool:
+            self.focus_lost_at = time.monotonic()
+            return False
 
         def move_to_launcher(self) -> None:
             """Put the window by the pointer's panel launcher (see place()); leave it be otherwise."""
@@ -283,6 +438,11 @@ def build_classes(Gdk, GLib, Gtk) -> None:
         def poll(self) -> None:
             fast = True
             while not self.closed:
+                if not self.shown.is_set():
+                    self.shown.wait()
+                    fast = True
+                    if self.closed:
+                        break
                 try:
                     snapshot = self.monitor.snapshot(stats=not fast)
                 except Exception as e:  # keep refreshing: a launcher has nowhere to show a traceback
@@ -365,5 +525,6 @@ def build_classes(Gdk, GLib, Gtk) -> None:
         def on_destroy(self, *_) -> None:
             self.closed = True
             self.wake.set()
+            self.shown.set()
 
     Panel = PanelWindow

@@ -237,7 +237,42 @@ class Placement(unittest.TestCase):
         self.assertEqual(self.place((3830, 17), self.SECOND, self.SECOND), ("NORTH_WEST", 3840 - 452, 35))
 
 
+class TrayAnchor(unittest.TestCase):
+    """A tray click reports the panel's inner edge at the icon and the panel's side (as Mint's applet does)."""
+
+    MONITOR = (1920, 0, 1920, 1080)
+    SIZE = (452, 120)
+
+    def anchor(self, point, side):
+        import lpcp_ui
+        return lpcp_ui.anchor(point, side, self.MONITOR, self.SIZE)
+
+    def test_sides(self):
+        self.assertEqual(self.anchor((2500, 34), "top"), ("NORTH_WEST", 2500, 34))          # drops from the icon
+        self.assertEqual(self.anchor((3800, 34), "top"), ("NORTH_WEST", 3840 - 452, 34))    # kept on the monitor
+        self.assertEqual(self.anchor((2500, 1046), "bottom"), ("SOUTH_WEST", 2500, 1046))
+        self.assertEqual(self.anchor((1954, 500), "left"), ("NORTH_WEST", 1954, 500))
+        self.assertEqual(self.anchor((3806, 1050), "right"), ("NORTH_EAST", 3806, 1080 - 120))
+
+    def test_panel_positions(self):
+        import lpcp_ui
+        self.assertEqual([lpcp_ui.SIDES[n] for n in range(4)], ["left", "right", "top", "bottom"])
+
+
 class Launcher(unittest.TestCase):
+    def test_install_with_and_without_tray(self):
+        import lpcp_ui
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"XDG_DATA_HOME": f"{tmp}/data", "XDG_CONFIG_HOME": f"{tmp}/config",
+                                             "LPCP_HOME": ""}):
+            menu, autostart = Path(tmp, "data/applications/lpcp.desktop"), Path(tmp, "config/autostart/lpcp.desktop")
+            lpcp_ui.install_launcher(tray=True)
+            self.assertIn(" ui --tray\n", menu.read_text())
+            self.assertEqual(autostart.read_text(), menu.read_text())
+            lpcp_ui.install_launcher(tray=False)
+            self.assertIn(" ui\n", menu.read_text())
+            self.assertFalse(autostart.exists())        # back to a plain launcher: no icon at login
+
     def test_desktop_entry(self):
         import lpcp_ui  # imports without GTK: GTK loads only when the window opens
         with mock.patch.dict(os.environ, {"LPCP_HOME": ""}):

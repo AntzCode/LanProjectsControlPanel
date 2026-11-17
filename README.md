@@ -32,7 +32,8 @@ Linux, Docker with Compose, Python 3.11+, `ss`. No packages to install: the tool
 library, and Caddy runs as a container. (macOS has only 127.0.0.1 unless an admin adds loopback aliases.)
 
 The optional [control panel](#control-panel) window also needs GTK 3 for Python, which most Linux desktops
-already have (Debian/Ubuntu: `python3-gi` and `gir1.2-gtk-3.0`).
+already have (Debian/Ubuntu: `python3-gi` and `gir1.2-gtk-3.0`). Its tray icon uses XApp, which Linux Mint has
+(`gir1.2-xapp-1.0`); without it, the window works as usual.
 
 ## Quick start
 
@@ -70,7 +71,7 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
 | `./dev proxy up\|down\|reload\|status` | Control the proxy directly |
 | `./dev trust` | Export Caddy's local CA certificate (see HTTPS) |
 | `./dev doctor` | Check Docker, the registry, project folders, and anything blocking ports |
-| `./dev ui [--install]` | Open the control panel window; `--install` adds it to the desktop's application menu |
+| `./dev ui [--tray] [--install]` | Open the control panel window, or with `--tray` put its icon in the panel's tray; `--install` adds it to the application menu (and with `--tray`, starts the icon at login) |
 
 `./dev down <site>` always runs the site's stop command; `./dev down` with no names stops only sites that answer.
 
@@ -93,14 +94,30 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
   containers, for example).
 - The line at the bottom shows the last result or error. Each start/stop is logged to `.state/logs/<name>.log`.
 - Edits to `projects.toml` show up without restarting the panel. Closing the window leaves every project as it is.
-  Opening it again while it's open brings the existing window to the front.
+  Opening it again while it's open brings the existing window to the front, or minimizes it if it's already in
+  front (hides it, in tray mode).
 - **Launched from a panel**, the window opens (or moves, if it's already open) just beside the panel, centred
   under the launcher icon: the pointer is on the icon when you click it, and it's outside the screen's work area.
   Launched from a menu or a terminal, it stays where the window manager puts it. On a monitor whose work area GTK
   doesn't know (any but the primary one, on X11), a launch within 64 px of an edge counts as a panel click; top and
   bottom win in a corner.
 
-To launch it from the desktop, run `./dev ui --install` once. It writes `~/.local/share/applications/lpcp.desktop`
+### Tray icon (Linux Mint)
+
+`./dev ui --tray` puts an LPCP icon in the panel's tray (the XApp Status Applet, on Mint's panels by default)
+and keeps the window hidden until you need it:
+
+- **Left click** shows the window dropping from the icon, like a menu, and hides it again when it's in front.
+  The tray reports the icon's exact position and which side the panel is on, so this is exact on every monitor.
+- **Right click**: Open, or Quit LPCP (quits the panel; projects keep running).
+- Closing the window hides it; the icon stays. While it's hidden the panel doesn't call docker at all.
+- `./dev ui --tray --install` adds the menu launcher and starts the icon at login
+  (`~/.config/autostart/lpcp.desktop`). A plain `./dev ui --install` removes that autostart entry again.
+- With no XApp tray (another desktop, or the applet removed), `--tray` says so and opens the window instead.
+
+### Launcher
+
+To launch it from the desktop without the tray, run `./dev ui --install` once. It writes `~/.local/share/applications/lpcp.desktop`
 (with this repo's path), which puts **LPCP** in the application menu under Programming. On MATE, right-click it
 there and choose **Add this launcher to panel**. Run `--install` again if you move the repo.
 
@@ -220,6 +237,11 @@ Verified by hand on Docker 29 / Compose 5 (2026-11-17), alongside a running Scri
   Closing the window left the projects running, and a second launch raised the first window. The window is listed
   as a normal 450 px window with a title bar and close button. With a stand-in dock window as the panel, each
   launch put the window against a top or bottom panel, centred on the pointer and kept on screen.
+- Tray mode ran natively on a private D-Bus session with a stand-in for Mint's tray applet, sending the
+  applet's own ButtonPress/ButtonRelease calls. It started hidden, made no docker calls while hidden, and
+  dropped from the icon's position (clamped at the screen edge). A second click hid it, the close button hid it
+  without quitting, a menu launch handed over and toggled it, and Quit LPCP ended it. Without a tray host it
+  fell back to the window.
 
 Not tested: browsers, phones, OSes other than Linux, trusting the CA system-wide, the panel on a real MATE
 panel and window list.
