@@ -2,25 +2,34 @@
 
 Run several docker projects on one machine at the same time, without fighting over ports.
 
-Each project keeps its own `./dev` and its own ports, and stays fully standalone. This tool
-registers your projects, starts each on a port it picks, and puts one Caddy proxy in front so you
-open `https://nan.localhost` instead of remembering `localhost:8101`.
+A port belongs to an address, not to the whole machine, and Linux gives you a whole range of loopback
+addresses (127.0.0.1 to 127.255.255.254). So this tool gives each project its own address and starts it with
+`./dev up --bind=<address>`. Every project keeps its usual ports (80, 443, 5432, ...) and none of them collide.
+One Caddy proxy on 127.0.0.1 serves them by name:
 
 ```
-https://nan.localhost   ─┐
-https://blog.localhost   ├─►  proxy (80/443)  ─►  127.0.0.1:8100  nan   (./dev up -p 8100)
-https://shop.localhost  ─┘                        127.0.0.1:8101  blog  (./dev up -p 8101)
-                                                  127.0.0.1:8102  shop  (./dev up -p 8102)
+https://nan.localhost   ─┐                          ┌─►  127.0.0.2   nan   (./dev up --bind=127.0.0.2)   :80 :5432
+https://blog.localhost  ─┴─►  proxy 127.0.0.1:443  ─┴─►  127.0.0.3   blog  (./dev up --bind=127.0.0.3)   :80 :5432
+
+https://dev.example.com  ───────────────────────────►  192.168.1.20  a project with real hostnames and its
+                                                                       own TLS, bound to the LAN address
 ```
 
-Why not label-based proxies (Traefik, caddy-docker-proxy)? They need every project's compose file
-changed (labels, a shared external network), which breaks it for anyone who clones it without the
-proxy. Here a project only learns one option, `-p PORT`, and ignores it unless it's given.
+- **No DNS, no hosts file, no sudo.** `*.localhost` always resolves to 127.0.0.1, where the proxy is.
+- **Projects stay standalone.** A project only learns `--bind=IP` and ignores it unless it's given, so anyone
+  who clones it without this tool runs it exactly as before.
+- **Databases don't collide either**, because every port of a project moves to its address.
+- **Projects with real hostnames and their own certificates** (for example, ones you test on a phone over the
+  LAN) are bound to the LAN address and left out of the proxy. They keep their own TLS and renewal.
+
+Why not label-based proxies (Traefik, caddy-docker-proxy)? They need every project's compose file changed
+(labels, a shared external network), which breaks it for anyone who clones it without the proxy, and they don't
+help with database ports.
 
 ## Requirements
 
-Linux (or anything with bash, Docker and `ss`), Docker with Compose, Python 3.11+. No packages to install:
-the tool is the Python standard library, and Caddy runs as a container.
+Linux, Docker with Compose, Python 3.11+, `ss`. No packages to install: the tool is the Python standard
+library, and Caddy runs as a container. (macOS has only 127.0.0.1 unless an admin adds loopback aliases.)
 
 ## Quick start
 
@@ -28,35 +37,35 @@ the tool is the Python standard library, and Caddy runs as a container.
 git clone https://github.com/AntzCode/LanProjectsControlPanel.git
 cd LanProjectsControlPanel
 
-./dev add nan  ~/Projects/NaNPhone       # registers it in projects.toml (git-ignored)
-./dev add blog ~/Projects/blog --up 'WEB_PORT={port} docker compose up -d' --down 'docker compose stop'
+./dev add nan  ~/Projects/NaNPhone        # registers it in projects.toml (git-ignored)
+./dev add st   ~/Projects/ScriptureTips --bind lan --port 443 --no-proxy --url https://dev.scripturetips.com
 
-./dev up            # every registered site; or ./dev up nan blog
-./dev ls            # URL, port and state of each
-./dev down nan      # one site; ./dev down stops all of them and the proxy
+./dev up            # every registered site; or ./dev up nan st
+./dev ls            # address, URL and state of each
+./dev down nan      # one site; ./dev down stops all of them (and the proxy)
 ```
 
-`./dev up` assigns each project a free port from 8100-8999 the first time and remembers it, starts the
-project, then starts or reloads the proxy. The proxy holds ports 80 and 443 only while at least one site
-is running.
+`./dev up` gives each project a free address from 127.0.0.2-127.0.0.99 the first time and remembers it, runs
+the project's `./dev up --bind=<address>`, waits until it answers, then starts or reloads the proxy. The proxy
+holds 127.0.0.1:80/443 only while a proxied site is running.
 
-A project has to accept `-p` first. See [Making a project compatible](#making-a-project-compatible).
+A project has to accept `--bind` first. See [Making a project compatible](#making-a-project-compatible).
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `./dev up [site...]` | Start sites (all registered when none are named), then update the proxy |
-| `./dev down [site...]` | Stop sites (all when none are named). The proxy stops when nothing is left |
+| `./dev down [site...]` | Stop sites (all when none are named). The proxy stops when nothing needs it |
 | `./dev restart [site...]` | Stop then start |
-| `./dev ls` | Registered sites, their URLs, ports and whether they are running |
+| `./dev ls` | Registered sites, their addresses, URLs and whether they are running |
 | `./dev logs <site>` | Follow a site's logs (runs its `logs` command, default `./dev logs`) |
 | `./dev open <site>` | Open it in the browser |
-| `./dev add <name> <dir> [--host H] [--up CMD] [--down CMD]` | Register a project |
+| `./dev add <name> <dir> [options]` | Register a project: `--bind auto\|lan\|IP`, `--port N`, `--host H`, `--no-proxy`, `--url U`, `--up CMD`, `--down CMD` |
 | `./dev rm <name>` | Unregister (does not stop it) |
 | `./dev proxy up\|down\|reload\|status` | Control the proxy directly |
 | `./dev trust` | Export Caddy's local CA certificate (see HTTPS) |
-| `./dev doctor` | Check Docker, the registry, project folders, and who holds ports 80/443 |
+| `./dev doctor` | Check Docker, the registry, project folders, and anything blocking ports |
 
 ## The registry
 
@@ -64,47 +73,57 @@ A project has to accept `-p` first. See [Making a project compatible](#making-a-
 `./dev add` writes it; you can also edit it. `projects.example.toml` shows every option:
 
 ```toml
-[settings]                     # all optional, defaults shown
-domain = "localhost"           # sites are <name>.localhost
-https = true                   # Caddy's local CA; false = plain http
+[settings]                                     # all optional, defaults shown
+domain = "localhost"                           # proxied sites are <name>.localhost
+https = true                                   # Caddy's local CA; false = plain http
 http_port = 80
 https_port = 443
-bind = "127.0.0.1"
-port_range = [8100, 8999]
-wait = 60                      # seconds to wait for a started project's port to open
+bind = "127.0.0.1"                             # the proxy's own address
+address_range = ["127.0.0.2", "127.0.0.99"]
+wait = 60                                      # seconds to wait for a started project to answer
 
 [projects.nan]
 dir = "~/Projects/NaNPhone"
-# host = "nan.localhost"       # optional overrides
-# port = 8101                  # otherwise assigned once and remembered in .state/
-# up   = "./dev up -p {port}"  # {port} {host} {url} {name} are filled in
-# down = "./dev down"
-# logs = "./dev logs"
+# bind  = "auto"                  # auto (assigned once, remembered in .state/), "lan", or an IP
+# port  = 80                      # its web port on that address: what the proxy forwards to
+# host  = "nan.localhost"
+# proxy = true
+# url   = "..."                   # shown by ls/open instead of the derived URL
+# up    = "./dev up --bind={bind}"  # {bind} {host} {url} {name} are filled in
+# down  = "./dev down"
+# logs  = "./dev logs"
 ```
 
-When it starts a project, `./dev` also sets `LPCP_PROJECT`, `LPCP_PORT`, `LPCP_HOST` and `LPCP_URL` in the
-project's environment, so an app can build absolute URLs and CORS origins from `LPCP_URL`.
+`bind = "lan"` uses this machine's LAN address (the source address of its default route), looked up each time,
+so it follows DHCP changes. When it starts a project, `./dev` also sets `LPCP_PROJECT`, `LPCP_BIND`, `LPCP_HOST`
+and `LPCP_URL` in the project's environment, so an app can build absolute URLs and CORS origins from `LPCP_URL`.
 
 ## Making a project compatible
 
 The contract is small, and a project that follows it still runs exactly as before without this tool:
 
-1. `./dev up -p PORT` (also `--port`) publishes the web entry point on `127.0.0.1:PORT`. With no `-p`,
-   nothing changes: same behaviour, same default port.
-2. In compose, take the host port from a variable that defaults to the old port:
-   `ports: ["127.0.0.1:${WEB_PORT:-3000}:3000"]`.
-3. `./dev down` stops it (and `./dev logs` follows its logs, optionally).
-4. Optional: read `LPCP_URL` as the app's public URL when it is set.
+1. `./dev up --bind=IP` (also `--bind IP`) publishes the project's ports on IP instead of 127.0.0.1. With no
+   `--bind`, nothing changes.
+2. If the project also has `--lan` (publish on every address), `--bind` and `--lan` are mutually exclusive:
+   using both is an error.
+3. In compose, take the address from a variable that defaults to the old one:
+   `ports: ["${BIND:-127.0.0.1}:80:80"]`, on every published port. Keep the port numbers as they are.
+4. `./dev down` stops it (and `./dev logs` follows its logs, optionally).
+5. Optional: read `LPCP_URL` as the app's public URL when it is set.
 
-`examples/dev` and `examples/compose.yaml` are a complete, runnable reference. Other published ports
-(databases, mail UIs, APIs) still collide between projects that publish the same ones: don't publish them,
-or offset them from `-p`. A project with no `./dev` can be registered with a custom `--up` command.
+`examples/dev` and `examples/compose.yaml` are a complete, runnable reference (a web server and a postgres).
+A project with no `./dev` can be registered with a custom command:
+`./dev add blog ~/blog --up 'BIND={bind} docker compose up -d --wait' --down 'docker compose stop'`.
+
+A project bound to a network address (`bind = "lan"`) is reachable from the LAN. Keep its private ports
+(database, internal API) on a loopback address rather than following `--bind`; ScriptureTips, for example, keeps
+them on 127.0.0.1 or moves them with its own `--local-bind`.
 
 ### Agent skill
 
 `skills/lpcp-docker-projects/SKILL.md` teaches a coding agent (Claude Code) how to make a project
-compatible, step by step, and how to check it did not break standalone use. It is meant to be installed
-once per developer, after cloning:
+compatible, step by step, and how to check it did not break standalone use. Install it once per developer,
+after cloning:
 
 ```bash
 # symlink (stays current with the repo)
@@ -115,8 +134,8 @@ cp -r skills/lpcp-docker-projects ~/.claude/skills/
 
 ## HTTPS
 
-By default sites use HTTPS with certificates from Caddy's own local CA, which your browser doesn't trust
-until you tell it to. `./dev trust` exports the CA certificate (`.state/lpcp-root.crt`):
+Proxied sites use HTTPS with certificates from Caddy's own local CA, which your browser doesn't trust until you
+tell it to. `./dev trust` exports the CA certificate (`.state/lpcp-root.crt`):
 
 ```bash
 curl --cacert .state/lpcp-root.crt https://nan.localhost      # verified, no system changes
@@ -124,28 +143,22 @@ curl --cacert .state/lpcp-root.crt https://nan.localhost      # verified, no sys
 
 Trusting it in a browser or OS is a one-time import of that file, which differs by browser and OS (Firefox and
 Chrome on Linux keep their own stores). Set `https = false` in `[settings]` for plain `http://` sites.
-The CA persists in the `lpcp-caddy-data` Docker volume across restarts.
-
-`*.localhost` resolves to 127.0.0.1 on its own in browsers and `curl` (RFC 6761), so no hosts-file entries
-are needed.
+The CA persists in the `lpcp-caddy-data` Docker volume across restarts. Projects with `proxy = false` handle
+their own TLS.
 
 ## Limits
 
-- **Ports 80 and 443 must be free** when the proxy starts. If something holds them (another project's own
-  Caddy, for example), `./dev up` says what holds them, still starts your projects, and prints their direct
-  `http://127.0.0.1:PORT` addresses. Fix it by stopping that thing, or set `http_port`, `https_port` and `bind`
-  in `[settings]`. Linux accepts every address in 127.0.0.0/8, so `bind = "127.0.0.2"` works beside a service
-  bound to 127.0.0.1 (tested). It does not help when the other service listens on `0.0.0.0` (all addresses),
-  which also covers 127.0.0.2; `./dev doctor` shows who holds what.
-- **With non-default `http_port`/`https_port`**, Caddy's plain-HTTP redirect points at the default HTTPS
-  port. Use the `https://` URL that `./dev ls` shows.
-- **Not for projects that terminate TLS themselves on real hostnames** (their own Caddy on 80/443 with
-  certificates for named domains): the origin changes with the port. Leave those on their own setup.
-- **Database and other non-web ports** are not handled; see above.
-- **LAN access** (other devices) isn't set up: sites are on the loopback address only.
-- "Running" means something is listening on the project's port. If another process takes a remembered port
-  while a project is stopped, `./dev up` will think the project is already running.
-- The proxy container runs with host networking so it can reach ports a project binds on `127.0.0.1` only.
+- **Anything listening on 0.0.0.0 blocks everyone.** A service on every address (a project started with
+  `--lan`, for example) holds that port on 127.0.0.2, 127.0.0.3 and the LAN address too. `./dev up` refuses and
+  names it; `./dev doctor` lists them. Restart it with `--bind` instead.
+- **The proxy needs 127.0.0.1:80 and :443.** If something holds them, `./dev up` says what, still starts your
+  projects, and prints their direct addresses. Or set `http_port`/`https_port` in `[settings]` (then Caddy's
+  plain-HTTP redirect points at the default HTTPS port; use the `https://` URL that `./dev ls` shows).
+- **`*.localhost` only works on this machine.** Other devices can't resolve it. For phones and tablets, bind the
+  project to the LAN address and give it real hostnames with public DNS, as ScriptureTips does.
+- **Linux-first.** macOS has only 127.0.0.1 without admin rights.
+- "Running" means something answers on the project's address and web port.
+- The proxy container runs with host networking so it can reach every 127.0.0.N.
 
 ## Tests
 
@@ -153,14 +166,19 @@ are needed.
 python3 -m unittest discover -s tests
 ```
 
-Covers the registry, port assignment, command templating and Caddyfile generation. Docker is not needed.
+Covers the registry, address assignment, command templating, URLs and Caddyfile generation. Docker is not needed.
 
-Verified by hand on Docker 29 / Compose 5 (2026-11-15): two projects that both default to port 3000 (the second
-fails to start standalone) ran together under `./dev up` on ports 8100 and 8101 and answered at
-`p1.localhost` and `p2.localhost` over HTTPS, verified against the exported CA; `./dev down p1` removed only
-p1's route; a port conflict on 80 was reported with the holder's name; `./dev down` removed the proxy; `bind = "127.0.0.2"`
-ran the proxy beside a separate listener on the same port at 127.0.0.1 (on alternate ports, not on 80/443).
-Not tested: browsers, OSes other than Linux, trusting the CA system-wide.
+Verified by hand on Docker 29 / Compose 5 (2026-11-17), alongside a running ScriptureTips stack:
+- Two copies of `examples/` ran together on 127.0.0.2 and 127.0.0.3. Each published the same web port and
+  5432, while ScriptureTips held 127.0.0.1:5432.
+- Both answered through the proxy at `p1.localhost` and `p2.localhost` over HTTPS, verified against the exported
+  CA, and both databases accepted connections.
+- `./dev down p1` removed only p1's route. A restarted project kept its address. `./dev down` removed the proxy.
+- With ScriptureTips started with `--lan` (0.0.0.0), `./dev up` refused and named its container.
+- ScriptureTips' own `./dev up --bind=192.168.88.10` was verified in its repo (Let's Encrypt certificates, e2e
+  tests).
+
+Not tested: browsers, phones, OSes other than Linux, trusting the CA system-wide.
 
 ## License
 

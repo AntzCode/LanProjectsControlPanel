@@ -2,26 +2,39 @@
 # optional; the values shown are the defaults.
 #
 # [settings]
-# domain = "localhost"       # sites are <name>.localhost
-# https = true               # Caddy's local CA; false serves plain http
+# domain = "localhost"                          # proxied sites are <name>.localhost
+# https = true                                  # Caddy's local CA; false serves plain http
 # http_port = 80
 # https_port = 443
-# bind = "127.0.0.1"
-# port_range = [8100, 8999]  # where project ports are assigned from (then remembered)
-# wait = 60                  # seconds to wait for a started project's port to open
+# bind = "127.0.0.1"                            # the proxy's own address
+# address_range = ["127.0.0.2", "127.0.0.99"]   # where project addresses are assigned from (then remembered)
+# wait = 60                                     # seconds to wait for a started project to answer
 
+# A typical project: gets its own 127.0.0.N, served at https://nan.localhost.
 [projects.nan]
 dir = "~/Projects/GitHub/AntzCode/NaNPhone"
 # Optional, defaults shown:
-# host = "nan.localhost"
-# port = 8101                         # otherwise assigned once and remembered
-# up = "./dev up -p {port}"           # {port} {host} {url} {name} are filled in
+# bind = "auto"                       # auto (from address_range), "lan" (this machine's LAN address), or an IP
+# port = 80                           # its web port on that address: what the proxy forwards to
+# host = "nan.localhost"              # the name the proxy serves
+# proxy = true
+# url = "..."                         # shown by ls and open instead of the derived URL
+# up = "./dev up --bind={bind}"       # {bind} {host} {url} {name} are filled in
 # down = "./dev down"
 # logs = "./dev logs"
+
+# A project with real hostnames, its own TLS and public DNS pointing at this machine's LAN address:
+# bound to the LAN address and left out of the proxy.
+# [projects.scripturetips]
+# dir = "~/Projects/GitHub/adonai-reigns/ScriptureTips"
+# bind = "lan"
+# port = 443
+# proxy = false
+# url = "https://dev.scripturetips.com"
 
 # A project with no ./dev can be driven by its compose file directly:
 # [projects.blog]
 # dir = "~/Projects/blog"
-# up = "WEB_PORT={port} docker compose up -d"
+# up = "BIND={bind} docker compose up -d --wait"
 # down = "docker compose stop"
 # logs = "docker compose logs -f"
