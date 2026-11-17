@@ -31,6 +31,9 @@ help with database ports.
 Linux, Docker with Compose, Python 3.11+, `ss`. No packages to install: the tool is the Python standard
 library, and Caddy runs as a container. (macOS has only 127.0.0.1 unless an admin adds loopback aliases.)
 
+The optional [control panel](#control-panel) window also needs GTK 3 for Python, which most Linux desktops
+already have (Debian/Ubuntu: `python3-gi` and `gir1.2-gtk-3.0`).
+
 ## Quick start
 
 ```bash
@@ -45,7 +48,8 @@ cd LanProjectsControlPanel
 ./dev down nan      # one site; ./dev down stops all of them (and the proxy)
 ```
 
-`./dev up` gives each project a free address from 127.0.0.2-127.0.0.99 the first time and remembers it, runs
+`./dev up` gives each project a free address from 127.0.0.2-127.0.0.99 the first time and remembers it (an
+address where anything already listens is skipped, since a project owns its whole address), runs
 the project's `./dev up --bind=<address>`, waits until it answers, then starts or reloads the proxy. The proxy
 holds 127.0.0.1:80/443 only while a proxied site is running.
 
@@ -66,8 +70,34 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
 | `./dev proxy up\|down\|reload\|status` | Control the proxy directly |
 | `./dev trust` | Export Caddy's local CA certificate (see HTTPS) |
 | `./dev doctor` | Check Docker, the registry, project folders, and anything blocking ports |
+| `./dev ui [--install]` | Open the control panel window; `--install` adds it to the desktop's application menu |
 
-## The registry
+`./dev down <site>` always runs the site's stop command; `./dev down` with no names stops only sites that answer.
+
+## Control panel
+
+`./dev ui` opens a small window (450 px wide) with one row per registered project:
+
+```
+●  nan                                   12.3%   1.4 GB
+●  st                                     0.8%   0.3 GB
+```
+
+- **The dot** is green when the project's web port is published and answers, red when its last start from the
+  panel failed (or the port is published but nothing answers), and translucent black when it's stopped.
+  Click it to start or stop the project: the panel runs `./dev up <name>` or `./dev down <name>`, one at a time,
+  and the dot pulses meanwhile. Hover over the name for the reason, URL and address.
+- **CPU and memory** are summed over the project's running containers, as `docker stats` reports them (CPU in
+  percent of one core, memory in GB), and refresh every few seconds. A project's containers are the ones compose
+  started from its folder (or a folder inside it), so a stopped project can still show usage (its test
+  containers, for example).
+- The line at the bottom shows the last result or error. Each start/stop is logged to `.state/logs/<name>.log`.
+- Edits to `projects.toml` show up without restarting the panel. Closing the window leaves every project as it is.
+  Opening it again while it's open brings the existing window to the front.
+
+To launch it from the desktop, run `./dev ui --install` once. It writes `~/.local/share/applications/lpcp.desktop`
+(with this repo's path), which puts **LPCP** in the application menu under Programming. On MATE, right-click it
+there and choose **Add this launcher to panel**. Run `--install` again if you move the repo.
 
 `projects.toml` lives in the repo folder and is not committed (it holds this machine's paths).
 `./dev add` writes it; you can also edit it. `projects.example.toml` shows every option:
@@ -166,7 +196,8 @@ their own TLS.
 python3 -m unittest discover -s tests
 ```
 
-Covers the registry, address assignment, command templating, URLs and Caddyfile generation. Docker is not needed.
+Covers the registry, address assignment, command templating, URLs, Caddyfile generation, and the control
+panel's logic (reading docker's output, project states, the launcher). Docker, GTK and a display are not needed.
 
 Verified by hand on Docker 29 / Compose 5 (2026-11-17), alongside a running ScriptureTips stack:
 - Two copies of `examples/` ran together on 127.0.0.2 and 127.0.0.3. Each published the same web port and
@@ -178,7 +209,14 @@ Verified by hand on Docker 29 / Compose 5 (2026-11-17), alongside a running Scri
 - ScriptureTips' own `./dev up --bind=192.168.88.10` was verified in its repo (Let's Encrypt certificates, e2e
   tests).
 
-Not tested: browsers, phones, OSes other than Linux, trusting the CA system-wide.
+- The control panel ran under MATE's window manager (marco) on a virtual display, started from its launcher's
+  command line with no terminal. Real mouse clicks started and stopped two projects. A click while busy was
+  ignored. A blocked start turned red with the reason, and clicking it again started the project once unblocked.
+  Closing the window left the projects running, and a second launch raised the first window. The window is listed
+  as a normal 450 px window with a title bar and close button.
+
+Not tested: browsers, phones, OSes other than Linux, trusting the CA system-wide, the panel on a real MATE
+panel and window list.
 
 ## License
 

@@ -172,5 +172,25 @@ class Rendering(unittest.TestCase):
         self.assertFalse(ip.startswith("127."))
 
 
+class AddressInUse(unittest.TestCase):
+    """A new project skips an address where anything listens, not only its own web port."""
+
+    SS = ("LISTEN 0 4096 127.0.0.2:443 0.0.0.0:*\n"
+          "LISTEN 0 4096 127.0.0.20:80 0.0.0.0:*\n"
+          "LISTEN 0 4096 [::1]:631 [::]:*\n")
+
+    def check(self, ip):
+        from unittest import mock
+        ss = mock.Mock(stdout=self.SS)
+        with mock.patch.object(lpcp, "listening", lambda port, host="127.0.0.1": False), \
+                mock.patch.object(lpcp.subprocess, "run", lambda *a, **k: ss):
+            return lpcp.address_in_use(80, ip)
+
+    def test_any_listener_takes_the_address(self):
+        self.assertTrue(self.check("127.0.0.2"))      # its 443 is taken, though 80 is free
+        self.assertFalse(self.check("127.0.0.3"))
+        self.assertFalse(self.check("127.0.0.200"))   # no prefix matches
+
+
 if __name__ == "__main__":
     unittest.main()

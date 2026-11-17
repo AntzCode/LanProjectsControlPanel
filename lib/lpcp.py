@@ -213,6 +213,18 @@ def listening(port: int, host: str = "127.0.0.1") -> bool:
         return s.connect_ex((host, port)) == 0
 
 
+def address_in_use(port: int, ip: str) -> bool:
+    """Whether a new project should skip this address: something answers on its web port, or anything at all
+    listens on the address (a project started by hand, for example), since a project owns its whole address."""
+    if listening(port, ip):
+        return True
+    try:
+        out = subprocess.run(["ss", "-Hltn"], text=True, capture_output=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(len(cols) > 3 and cols[3].rsplit(":", 1)[0] == ip for cols in map(str.split, out.splitlines()))
+
+
 def lan_address() -> str:
     """This machine's LAN address: the source address of its default route (a UDP connect sends nothing)."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -227,7 +239,7 @@ def lan_address() -> str:
 
 
 def project_address(project: Project, reg: Registry, addresses: dict[str, str], assign: bool = True,
-                    in_use=listening, lan=lan_address) -> str | None:
+                    in_use=address_in_use, lan=lan_address) -> str | None:
     """The address a project runs on: fixed, the LAN address, remembered from before, or the first free one."""
     if project.bind == "lan":
         return lan()
@@ -492,11 +504,12 @@ def cmd_down(reg: Registry, args) -> int:
             print(f"{p.name}: {e}", file=sys.stderr)
             failed.append(p.name)
             continue
-        if not ip or not listening(p.port, ip):
+        # A named site is always stopped: half-started (nothing answers) still needs stopping.
+        if not args.sites and (not ip or not listening(p.port, ip)):
             print(f"{p.name}: not running")
             continue
         print(f"{p.name}: stopping ...")
-        if run_project(p, p.down, ip, reg) != 0:
+        if run_project(p, p.down, ip or "", reg) != 0:      # no address yet: started by hand, standalone
             failed.append(p.name)
     try:
         sync_proxy(reg, addresses)
@@ -679,6 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["up", "down", "reload", "status"])
     sub.add_parser("trust", help="export Caddy's local CA certificate")
     sub.add_parser("doctor", help="check docker, addresses, ports and the registry")
+    p = sub.add_parser("ui", help="open the control panel window (needs GTK 3 for Python)")
+    p.add_argument("--install", action="store_true", help="add a launcher to the desktop's application menu")
     return ap
 
 
@@ -690,6 +705,9 @@ COMMANDS = {"up": cmd_up, "down": cmd_down, "restart": cmd_restart, "ls": cmd_ls
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "ui":
+            import lpcp_ui  # GTK is only needed for the panel, which reads the registry itself
+            return lpcp_ui.main(args)
         return COMMANDS[args.command](load_registry(), args)
     except LpcpError as e:
         print(f"error: {e}", file=sys.stderr)
