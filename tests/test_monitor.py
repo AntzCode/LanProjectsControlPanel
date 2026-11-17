@@ -159,6 +159,51 @@ bind = "127.0.0.3"
         self.assertEqual({r.state for r in snap.rows}, {"off"})
 
 
+class Panic(unittest.TestCase):
+    """Ctrl+Alt+click on the tray icon kills the registered project using the most CPU."""
+
+    def row(self, name, cpu, ids):
+        return mon.Row(name, "green" if ids else "off", "", "down", None, "", cpu=cpu, ids=ids)
+
+    def test_target(self):
+        rows = [self.row("a", 30.0, ["a1"]), self.row("b", 180.5, ["b1", "b2"]), self.row("c", None, [])]
+        self.assertEqual(mon.panic_target(rows).name, "b")
+        self.assertIsNone(mon.panic_target([self.row("a", 4.9, ["a1"])]))   # nothing busy: kill nothing
+        self.assertIsNone(mon.panic_target([self.row("c", None, [])]))
+
+    def run_panic(self, rows):
+        killed = []
+
+        def docker(args, timeout=15):
+            killed.append(args)
+            return ""
+        monitor = mock.Mock()
+        monitor.snapshot.return_value = mon.Snapshot(rows=rows, stats=True)
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"LPCP_HOME": home}), \
+                mock.patch.object(mon, "docker", docker):
+            message = mon.panic(monitor)
+            logs = {f.stem: f.read_text() for f in Path(home, ".state/logs").glob("*.log")}
+        monitor.snapshot.assert_called_once_with(stats=True)      # fresh CPU figures, not the last refresh's
+        return message, killed, logs
+
+    def test_kills_the_busiest(self):
+        message, killed, logs = self.run_panic([self.row("a", 30.0, ["a1"]), self.row("b", 180.5, ["b1", "b2"])])
+        self.assertEqual(killed, [["kill", "b1", "b2"]])
+        self.assertIn("killed b (180% CPU, 2 containers; all: a 30.0%, b 180.5%)", message)
+        self.assertIn("./dev up b", message)
+        self.assertEqual(sorted(logs), ["b", "panic"])            # the panic log and the killed project's log
+        self.assertIn(message, logs["panic"])
+        self.assertIn(message, logs["b"])
+
+    def test_nothing_busy(self):
+        message, killed, logs = self.run_panic([self.row("a", 1.2, ["a1"])])
+        self.assertEqual(killed, [])
+        self.assertIn("nothing killed", message)
+        self.assertIn("(a 1.2%)", message)
+        self.assertEqual(sorted(logs), ["panic"])                 # logged even when nothing was killed
+        self.assertIn(message, logs["panic"])
+
+
 class DownNamed(unittest.TestCase):
     def test_named_site_is_stopped_even_when_nothing_answers(self):
         reg = lpcp.parse_registry('[projects.a]\ndir = "/tmp"\nbind = "127.0.0.2"\n'

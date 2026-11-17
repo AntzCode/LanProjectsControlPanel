@@ -127,6 +127,7 @@ class Row:
     cpu: float | None = None    # percent of one CPU, summed over the project's containers; None when none run
     mem_gb: float | None = None  # GB (10^9 bytes), summed
     containers: int = 0
+    ids: list[str] = field(default_factory=list)    # its running containers
 
 
 @dataclass
@@ -194,12 +195,61 @@ class Monitor:
             if state == "off" and group:
                 why = f"stopped ({len(group)} other container{'s' if len(group) != 1 else ''} of it running)"
             row = Row(name, state, why, "down" if web else "up", ip, lpcp.site_url(p, reg.settings, ip),
-                      containers=len(group))
+                      containers=len(group), ids=[c.id for c in group])
             if group:
                 row.cpu = sum(usage.get(c.id, (0.0, 0.0))[0] for c in group)
                 row.mem_gb = sum(usage.get(c.id, (0.0, 0.0))[1] for c in group) / 1e9
             rows.append(row)
         return Snapshot(rows=rows, stats=stats)
+
+
+# --------------------------------------------------------------------------- panic
+
+PANIC_MIN_CPU = 5.0     # percent: below this nothing is busy enough to blame, so nothing is killed
+
+
+def panic_target(rows: list[Row]) -> Row | None:
+    """The running project using the most CPU, if it uses at least PANIC_MIN_CPU."""
+    running = [r for r in rows if r.ids and r.cpu is not None]
+    top = max(running, key=lambda r: r.cpu, default=None)
+    return top if top is not None and top.cpu >= PANIC_MIN_CPU else None
+
+
+def log_event(names: list[str], message: str) -> None:
+    """Append a timestamped line to .state/logs/<name>.log for each name (best effort)."""
+    try:
+        logs = lpcp.state_dir() / "logs"
+        logs.mkdir(exist_ok=True)
+        for name in names:
+            with (logs / f"{name}.log").open("a", encoding="utf-8") as f:
+                f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')}  {message}\n")
+    except OSError:
+        pass
+
+
+def panic(monitor: Monitor) -> str:
+    """Kill (SIGKILL, no graceful stop: the machine may be struggling) every container of the busiest registered
+    project. The containers are stopped, not removed: `./dev up <name>` starts it again. -> what happened, which
+    is also logged to .state/logs/panic.log (and the killed project's own log)."""
+    message, killed = _panic(monitor)
+    log_event(["panic"] + ([killed] if killed else []), message)
+    return message
+
+
+def _panic(monitor: Monitor) -> tuple[str, str | None]:
+    snapshot = monitor.snapshot(stats=True)
+    if snapshot.error and not snapshot.rows:
+        return f"Panic: nothing killed ({snapshot.error})", None
+    usage = ", ".join(f"{r.name} {r.cpu:.1f}%" for r in snapshot.rows if r.cpu is not None) or "none running"
+    top = panic_target(snapshot.rows)
+    if top is None:
+        return f"Panic: nothing killed, no project uses {PANIC_MIN_CPU:.0f}% CPU or more ({usage})", None
+    try:
+        docker(["kill", *top.ids], timeout=30)
+    except (lpcp.LpcpError, OSError, subprocess.TimeoutExpired) as e:
+        return f"Panic: killing {top.name} failed: {e}", top.name
+    return (f"Panic: killed {top.name} ({top.cpu:.0f}% CPU, {len(top.ids)} container"
+            f"{'s' if len(top.ids) != 1 else ''}; all: {usage}). Start it again with ./dev up {top.name}"), top.name
 
 
 # --------------------------------------------------------------------------- start/stop

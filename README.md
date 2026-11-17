@@ -92,7 +92,8 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
   percent of one core, memory in GB), and refresh every few seconds. A project's containers are the ones compose
   started from its folder (or a folder inside it), so a stopped project can still show usage (its test
   containers, for example).
-- The line at the bottom shows the last result or error. Each start/stop is logged to `.state/logs/<name>.log`.
+- The line at the bottom shows the last result or error. Each start/stop is logged to `.state/logs/<name>.log`
+  (in this repo's folder, next to `projects.toml`; git-ignored).
 - Edits to `projects.toml` show up without restarting the panel. Closing the window leaves every project as it is.
   Opening it again while it's open brings the existing window to the front, or minimizes it if it's already in
   front (hides it, in tray mode).
@@ -110,6 +111,12 @@ and keeps the window hidden until you need it:
 - **Left click** shows the window dropping from the icon, like a menu, and hides it again when it's in front.
   The tray reports the icon's exact position and which side the panel is on, so this is exact on every monitor.
 - **Right click**: Open, or Quit LPCP (quits the panel; projects keep running).
+- **Panic: Ctrl+Alt+left click** kills the registered project using the most CPU, for when the machine suddenly
+  struggles. It measures CPU fresh (about 2 seconds), then `docker kill`s that project's containers: no graceful
+  stop, so it works under load. The containers are stopped, not removed, so `./dev up <name>` brings it back. It
+  kills nothing if no project uses 5% CPU or more, and never touches containers outside the registry. The window
+  stays as it is; the result appears as a desktop notification and in the window's status line, and every panic
+  is logged to `.state/logs/panic.log` (and the killed project's own log). Tray only.
 - Closing the window hides it; the icon stays. While it's hidden the panel doesn't call docker at all.
 - `./dev ui --tray --install` adds the menu launcher and starts the icon at login
   (`~/.config/autostart/lpcp.desktop`). A plain `./dev ui --install` removes that autostart entry again.
@@ -242,6 +249,9 @@ Verified by hand on Docker 29 / Compose 5 (2026-11-17), alongside a running Scri
   dropped from the icon's position (clamped at the screen edge). A second click hid it, the close button hid it
   without quitting, a menu launch handed over and toggled it, and Quit LPCP ended it. Without a tray host it
   fell back to the window.
+- Panic: with one scratch project spinning a CPU core and one idle, Ctrl+Alt (held through the X server) plus a
+  tray click killed only the busy one, kept the window hidden, sent the notification and logged it. A second
+  panic killed nothing and said why. Marco passes Ctrl+Alt clicks through to a panel (tested with a dock window).
 
 Not tested: browsers, phones, OSes other than Linux, trusting the CA system-wide, the panel on a real MATE
 panel and window list.

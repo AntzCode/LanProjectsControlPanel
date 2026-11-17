@@ -175,7 +175,7 @@ def main(args) -> int:
             print(f"lpcp: {why}; opening the window instead", file=sys.stderr)
     GLib.set_prgname(WM_CLASS)
     Gdk.set_program_class(WM_CLASS)
-    build_classes(Gdk, GLib, Gtk)
+    build_classes(Gdk, Gio, GLib, Gtk)
     flags = Gio.ApplicationFlags.NON_UNIQUE if os.environ.get("LPCP_HOME") else Gio.ApplicationFlags.FLAGS_NONE
     app = Gtk.Application(application_id=APP_ID, flags=flags)
     app.panel = None
@@ -201,7 +201,7 @@ def main(args) -> int:
 Panel = None
 
 
-def build_classes(Gdk, GLib, Gtk) -> None:
+def build_classes(Gdk, Gio, GLib, Gtk) -> None:
     global Panel
 
     provider = Gtk.CssProvider()
@@ -340,6 +340,7 @@ def build_classes(Gdk, GLib, Gtk) -> None:
             self.connect("destroy", self.on_destroy)
             self.connect("delete-event", self.on_close)
             self.focus_lost_at = 0.0
+            self.panicking = False
             self.connect("focus-out-event", self.on_focus_out)
 
             self.wake = threading.Event()
@@ -366,6 +367,12 @@ def build_classes(Gdk, GLib, Gtk) -> None:
             return self.get_visible() and (self.is_active() or time.monotonic() - self.focus_lost_at < FOCUS_GRACE)
 
         def tray_click(self, x: int, y: int, side: str, timestamp: int) -> None:
+            # The tray doesn't pass key state, so read it now: Ctrl+Alt is still held as the click arrives.
+            state = Gdk.Keymap.get_for_display(self.get_display()).get_modifier_state()
+            panic_keys = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK
+            if state & panic_keys == panic_keys:
+                self.panic()
+                return
             if self.in_front():
                 self.conceal()
                 return
@@ -383,6 +390,36 @@ def build_classes(Gdk, GLib, Gtk) -> None:
             self.move(wx, wy)
             self.reveal(timestamp)
             self.move(wx, wy)       # again once shown: a window shown before reappears where it was otherwise
+
+        def panic(self) -> None:
+            """Ctrl+Alt+click on the tray icon: kill the busiest project (see lpcp_monitor.panic), off the UI
+            thread, without showing the window; the result comes as a desktop notification."""
+            if self.panicking:
+                return
+            self.panicking = True
+            self.notify("Panic: finding the busiest project...")
+
+            def work():
+                try:
+                    message = mon.panic(self.monitor)
+                except Exception as e:  # never leave the panic button stuck
+                    message = f"Panic failed: {e}"
+                GLib.idle_add(self.panic_done, message)
+            threading.Thread(target=work, daemon=True).start()
+
+        def panic_done(self, message: str) -> bool:
+            self.panicking = False
+            self.message = message
+            self.refresh_status()
+            self.notify(message)
+            self.wake.set()
+            return False
+
+        def notify(self, text: str) -> None:
+            note = Gio.Notification.new("LPCP")
+            note.set_body(text)
+            note.set_icon(Gio.FileIcon.new(Gio.File.new_for_path(str(ICON))))
+            self.get_application().send_notification("lpcp-panic", note)   # same id: replaces the last one
 
         def launcher_click(self) -> None:
             """Another launch handed over to this window: hide it if it's in front, else bring it to the launcher."""
