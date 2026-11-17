@@ -204,6 +204,39 @@ class Worker(unittest.TestCase):
         self.assertEqual((calls, actions.busy), (["bad", "good"], {}))
 
 
+class Placement(unittest.TestCase):
+    """Where a launch puts the window: by the panel launcher the pointer is on."""
+
+    SIZE = (452, 120)
+    PRIMARY = (0, 0, 1920, 1200)          # a 34 px top panel: work area known
+    PRIMARY_WA = (0, 34, 1920, 1166)
+    SECOND = (1920, 0, 1920, 1080)        # second monitor: GTK reports no work area (= geometry)
+
+    def place(self, pointer, geometry=PRIMARY, workarea=PRIMARY_WA):
+        import lpcp_ui
+        return lpcp_ui.place(pointer, geometry, workarea, self.SIZE)
+
+    def test_top_panel(self):
+        self.assertEqual(self.place((700, 17)), ("NORTH_WEST", 700 - 226, 34))   # centred under the icon
+        self.assertEqual(self.place((40, 17)), ("NORTH_WEST", 0, 34))            # kept on screen
+        self.assertEqual(self.place((1910, 17)), ("NORTH_WEST", 1920 - 452, 34))
+
+    def test_other_edges(self):
+        geometry = (0, 0, 1920, 1200)
+        self.assertEqual(self.place((700, 1190), geometry, (0, 0, 1920, 1176)), ("SOUTH_WEST", 474, 1176))
+        self.assertEqual(self.place((10, 500), geometry, (24, 0, 1896, 1200)), ("NORTH_WEST", 24, 440))
+        self.assertEqual(self.place((1910, 500), geometry, (0, 0, 1896, 1200)), ("NORTH_EAST", 1896, 440))
+
+    def test_launched_from_a_menu_or_terminal(self):
+        self.assertIsNone(self.place((700, 400)))
+        self.assertIsNone(self.place((2500, 400), self.SECOND, self.SECOND))
+
+    def test_monitor_without_a_work_area(self):
+        # pointer mid-panel at y=17: a panel 35 px thick is assumed
+        self.assertEqual(self.place((2500, 17), self.SECOND, self.SECOND), ("NORTH_WEST", 2500 - 226, 35))
+        self.assertEqual(self.place((3830, 17), self.SECOND, self.SECOND), ("NORTH_WEST", 3840 - 452, 35))
+
+
 class Launcher(unittest.TestCase):
     def test_desktop_entry(self):
         import lpcp_ui  # imports without GTK: GTK loads only when the window opens

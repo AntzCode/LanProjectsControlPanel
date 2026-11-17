@@ -94,6 +94,11 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
 - The line at the bottom shows the last result or error. Each start/stop is logged to `.state/logs/<name>.log`.
 - Edits to `projects.toml` show up without restarting the panel. Closing the window leaves every project as it is.
   Opening it again while it's open brings the existing window to the front.
+- **Launched from a panel**, the window opens (or moves, if it's already open) just beside the panel, centred
+  under the launcher icon: the pointer is on the icon when you click it, and it's outside the screen's work area.
+  Launched from a menu or a terminal, it stays where the window manager puts it. On a monitor whose work area GTK
+  doesn't know (any but the primary one, on X11), a launch within 64 px of an edge counts as a panel click; top and
+  bottom win in a corner.
 
 To launch it from the desktop, run `./dev ui --install` once. It writes `~/.local/share/applications/lpcp.desktop`
 (with this repo's path), which puts **LPCP** in the application menu under Programming. On MATE, right-click it
@@ -213,7 +218,8 @@ Verified by hand on Docker 29 / Compose 5 (2026-11-17), alongside a running Scri
   command line with no terminal. Real mouse clicks started and stopped two projects. A click while busy was
   ignored. A blocked start turned red with the reason, and clicking it again started the project once unblocked.
   Closing the window left the projects running, and a second launch raised the first window. The window is listed
-  as a normal 450 px window with a title bar and close button.
+  as a normal 450 px window with a title bar and close button. With a stand-in dock window as the panel, each
+  launch put the window against a top or bottom panel, centred on the pointer and kept on screen.
 
 Not tested: browsers, phones, OSes other than Linux, trusting the CA system-wide, the panel on a real MATE
 panel and window list.

@@ -23,6 +23,7 @@ APP_ID = "com.antzcode.lpcp"
 WM_CLASS = "lpcp"
 WIDTH = 450
 REFRESH = 2.0           # seconds between refreshes; reading docker stats adds about 2 more
+EDGE = 64               # px: with no work area known, a launch this close to a screen edge counts as a panel click
 COLORS = {"green": (0.18, 0.74, 0.31, 1.0), "red": (0.89, 0.22, 0.21, 1.0), "off": (0.0, 0.0, 0.0, 0.25)}
 CSS = b"""
 .lpcp-dot, .lpcp-dot:hover, .lpcp-dot:active, .lpcp-dot:focus {
@@ -55,6 +56,44 @@ def install_launcher() -> Path:
     return path
 
 
+def place(pointer: tuple[int, int], geometry: tuple, workarea: tuple, size: tuple[int, int]):
+    """Where to put the window when it's launched with the pointer at `pointer` (on a panel launcher's icon):
+    just inside the work area, against the panel the pointer is on, centred on the pointer.
+    Rectangles are (x, y, width, height); size is the window's outer size.
+    -> (gravity, x, y), where (x, y) is the window's corner named by the Gdk.Gravity; or None to leave the window
+    where it is (the pointer is inside the work area: launched from a menu or a terminal).
+    """
+    px, py = pointer
+    w, h = size
+    ax, ay, aw, ah = workarea
+    if tuple(workarea) == tuple(geometry):
+        # No work area for this monitor (GTK knows it only for the primary one): if the pointer is near an edge,
+        # take it as a panel there, as thick as twice the pointer's distance (launcher icons sit mid-panel).
+        # Top and bottom panels (the usual layout) win in a corner: an icon at the end of a top panel is nearer
+        # the side edge than the top.
+        gx, gy, gw, gh = geometry
+        distance = {"top": py - gy, "bottom": gy + gh - 1 - py, "left": px - gx, "right": gx + gw - 1 - px}
+        edge = next((e for e in ("top", "bottom", "left", "right") if distance[e] < EDGE), None)
+        if edge is None:
+            return None
+        t = 2 * distance[edge] + 1
+        ax, ay, aw, ah = {"top": (gx, gy + t, gw, gh - t), "bottom": (gx, gy, gw, gh - t),
+                          "left": (gx + t, gy, gw - t, gh), "right": (gx, gy, gw - t, gh)}[edge]
+
+    def clamp(v, lo, hi):
+        return max(lo, min(v, hi))
+
+    if py < ay:
+        return "NORTH_WEST", clamp(px - w // 2, ax, ax + aw - w), ay
+    if py >= ay + ah:
+        return "SOUTH_WEST", clamp(px - w // 2, ax, ax + aw - w), ay + ah
+    if px < ax:
+        return "NORTH_WEST", ax, clamp(py - h // 2, ay, ay + ah - h)
+    if px >= ax + aw:
+        return "NORTH_EAST", ax + aw, clamp(py - h // 2, ay, ay + ah - h)
+    return None
+
+
 def load_gtk():
     try:
         import gi
@@ -82,9 +121,14 @@ def main(args) -> int:
     app = Gtk.Application(application_id=APP_ID, flags=flags)
 
     def activate(application):
+        # Runs on every launch: a second launch hands over to this one, so each click on the panel launcher
+        # brings the window to the launcher.
         window = application.get_active_window()
-        if window is None:
+        new = window is None
+        if new:
             window = Panel(application)
+        window.move_to_launcher()
+        if new:
             window.show_all()
         window.present()
 
@@ -208,6 +252,31 @@ def build_classes(Gdk, GLib, Gtk) -> None:
 
             self.wake = threading.Event()
             threading.Thread(target=self.poll, daemon=True).start()
+
+        def move_to_launcher(self) -> None:
+            """Put the window by the pointer's panel launcher (see place()); leave it be otherwise."""
+            display = self.get_display()
+            seat = display.get_default_seat()
+            pointer = seat.get_pointer() if seat else None
+            if pointer is None:
+                return
+            _, px, py = pointer.get_position()
+            monitor = display.get_monitor_at_point(px, py)
+            if monitor is None:
+                return
+            g, a = monitor.get_geometry(), monitor.get_workarea()
+            gdk_window = self.get_window()
+            if gdk_window is not None and self.get_mapped():
+                frame = gdk_window.get_frame_extents()
+                size = (frame.width, frame.height)
+            else:
+                w, h = self.get_size()
+                size = (w + 2, h + 32)      # not shown yet: allow for the window manager's frame
+            spot = place((px, py), (g.x, g.y, g.width, g.height), (a.x, a.y, a.width, a.height), size)
+            if spot:
+                gravity, x, y = spot
+                self.set_gravity(getattr(Gdk.Gravity, gravity))
+                self.move(x, y)
 
         # ---- background refresh
 
