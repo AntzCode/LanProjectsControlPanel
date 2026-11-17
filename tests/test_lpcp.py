@@ -192,5 +192,94 @@ class AddressInUse(unittest.TestCase):
         self.assertFalse(self.check("127.0.0.200"))   # no prefix matches
 
 
+class Launchers(unittest.TestCase):
+    """A project's launch buttons come from its `./dev config.launchers`; without them lpcp opens its URL."""
+
+    def test_parse(self):
+        got = lpcp.parse_launchers('[{"app":"site","title":"Open dev.scripture.tips in the browser"},'
+                                   '{"app":"data","title":" Open the data browser "}]')
+        self.assertEqual(got, [lpcp.Launcher("site", "Open dev.scripture.tips in the browser"),
+                               lpcp.Launcher("data", "Open the data browser")])
+        # The default may leave out "app": `./dev launch` without --app opens it.
+        self.assertEqual(lpcp.parse_launchers('[{"title":"Open it"}]'), [lpcp.Launcher(None, "Open it")])
+
+    def test_class(self):
+        """A launcher's "class" picks its icon: web unless it says otherwise."""
+        got = lpcp.parse_launchers('[{"app":"site","title":"S"},{"app":"mail","title":"M","class":"mail"},'
+                                   '{"app":"data","title":"D","class":"db"}]')
+        self.assertEqual([lch.kind for lch in got], ["web", "mail", "db"])
+        self.assertEqual(lpcp.LAUNCHER_CLASSES, ("web", "mail", "db", "logs", "config", "tool"))
+        # A well-formed class this lpcp doesn't know is kept (the panel draws it as a tool), not an error.
+        (newer,) = lpcp.parse_launchers('[{"app":"x","title":"X","class":"metrics"}]')
+        self.assertEqual(newer.kind, "metrics")
+
+    def test_class_rejects(self):
+        for bad in ('"Web"', '"a b"', '""', "3", "null", "[]"):
+            with self.subTest(bad=bad), self.assertRaises(lpcp.LpcpError):
+                lpcp.parse_launchers('[{"app":"site","title":"S","class":%s}]' % bad)
+
+    def test_parse_rejects(self):
+        for text in ("", "nope", "{}", "[]", '["x"]', '[{"app":"site"}]', '[{"app":"site","title":" "}]',
+                     '[{"app":"Site","title":"x"}]', '[{"app":"a b","title":"x"}]',
+                     '[{"app":"a","title":"x"},{"app":"a","title":"y"}]',
+                     '[{"app":"a","title":"x"},{"title":"y"}]'):
+            with self.subTest(text=text), self.assertRaises(lpcp.LpcpError):
+                lpcp.parse_launchers(text)
+
+    def project(self, script: str | None):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        if script is not None:
+            (d / "dev").write_text("#!/usr/bin/env bash\n" + script)
+            (d / "dev").chmod(0o755)
+        return lpcp.Project("st", d, "st.localhost", url="https://dev.example.test")
+
+    def test_from_the_project(self):
+        p = self.project('[[ "$1" == config.launchers ]] || exit 2\n'
+                         'printf \'[{"app":"site","title":"Open %s"}]\\n\' "$LPCP_URL"\n')
+        self.assertEqual(lpcp.project_launchers(p, dict(lpcp.DEFAULTS), "192.168.1.5"),
+                         [lpcp.Launcher("site", "Open https://dev.example.test")])   # LPCP_* are set
+
+    def test_builtin_when_not_provided(self):
+        settings = dict(lpcp.DEFAULTS)
+        for script in (None, 'echo "usage: ./dev up | down" >&2; exit 1\n'):
+            with self.subTest(script=script):
+                (only,) = lpcp.project_launchers(self.project(script), settings)
+                self.assertTrue(only.builtin)
+                self.assertEqual((only.app, only.title), (None, "Open dev.example.test in the browser"))
+
+    def test_invalid_output_is_an_error(self):
+        with self.assertRaises(lpcp.LpcpError):
+            lpcp.project_launchers(self.project("echo not json\n"), dict(lpcp.DEFAULTS))
+
+    def test_launch(self):
+        from unittest import mock
+        p = self.project('case "$1" in\n'
+                         '  config.launchers) echo \'[{"app":"site","title":"S"},{"app":"data","title":"D"}]\' ;;\n'
+                         '  launch) echo "$*|$LPCP_URL" > launched ;;\n'
+                         'esac\n')
+        reg = lpcp.Registry(projects={"st": p})
+        with mock.patch.object(lpcp, "load_addresses", lambda: {}):
+            self.assertEqual(lpcp.launch(p, reg, "data"), 0)
+            self.assertEqual((p.dir / "launched").read_text(), "launch --app=data|https://dev.example.test\n")
+            self.assertEqual(lpcp.launch(p, reg), 0)
+            self.assertEqual((p.dir / "launched").read_text(), "launch|https://dev.example.test\n")
+            with self.assertRaises(lpcp.LpcpError):
+                lpcp.launch(p, reg, "nope")
+
+    def test_launch_builtin_opens_the_url(self):
+        from unittest import mock
+        p = self.project(None)
+        reg = lpcp.Registry(projects={"st": p})
+        with mock.patch.object(lpcp, "load_addresses", lambda: {}), \
+                mock.patch.object(lpcp, "open_url") as opened:
+            self.assertEqual(lpcp.launch(p, reg), 0)
+            opened.assert_called_once_with("https://dev.example.test")
+            with self.assertRaises(lpcp.LpcpError):
+                lpcp.launch(p, reg, "data")      # no launchers: no apps to choose from
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 AntzCode
 """The control panel window (GTK 3): one row per registered project with a status dot (click to start or
-stop it), its name, and its CPU and memory use. `./dev ui` opens it; `./dev ui --tray` puts an icon in the
+stop it), its name, its CPU and memory use, and a launch button per launcher (its `./dev config.launchers`, or
+"open" for its URL). `./dev ui` opens it; `./dev ui --tray` puts an icon in the
 panel's tray instead, which shows and hides the window; `--install` adds a launcher to the desktop's
 application menu (and, with --tray, starts the icon at login). Closing the window leaves every project as it is.
 
@@ -36,8 +37,104 @@ CSS = b"""
 .lpcp-name { font-weight: bold; }
 .lpcp-metric { font-feature-settings: "tnum"; }
 .lpcp-dim { opacity: 0.45; }
-.lpcp-status { opacity: 0.75; }
+.lpcp-note { opacity: 0.75; }
+.lpcp-launch, .lpcp-launch:hover, .lpcp-launch:active, .lpcp-launch:focus, .lpcp-launch:disabled {
+  padding: 2px; min-width: 0; min-height: 0;
+  border-color: transparent; background: none; box-shadow: none;
+}
 """
+
+
+# ---- launcher icons: a round, coloured badge with a white glyph per class (lpcp.LAUNCHER_CLASSES)
+
+ICON_SIZE = 20          # px: a launcher icon's diameter
+LAUNCHER_COLORS = {     # badge colours, chosen to differ from each other and from the status dot's green and red
+    "web": (0.20, 0.52, 0.89), "mail": (0.91, 0.45, 0.18), "db": (0.55, 0.36, 0.78),
+    "logs": (0.15, 0.61, 0.58), "config": (0.74, 0.60, 0.10), "tool": (0.42, 0.47, 0.53),
+}
+
+
+def _ellipse(cr, x, y, rx, ry, start=0.0, end=2 * math.pi):
+    cr.save()
+    cr.translate(x, y)
+    cr.scale(rx, ry)
+    cr.arc(0, 0, 1, start, end)
+    cr.restore()        # the path keeps its shape; the stroke that follows uses the normal line width
+
+
+def _glyph_web(cr):     # a globe
+    _ellipse(cr, 0, 0, 1, 1)
+    cr.new_sub_path()
+    _ellipse(cr, 0, 0, 0.45, 1)
+    cr.move_to(-1, 0)
+    cr.line_to(1, 0)
+
+
+def _glyph_mail(cr):    # an envelope
+    cr.rectangle(-1, -0.7, 2, 1.4)
+    cr.move_to(-1, -0.7)
+    cr.line_to(0, 0.1)
+    cr.line_to(1, -0.7)
+
+
+def _glyph_db(cr):      # a cylinder
+    _ellipse(cr, 0, -0.65, 0.95, 0.35)
+    cr.new_sub_path()
+    _ellipse(cr, 0, 0, 0.95, 0.35, 0, math.pi)
+    cr.new_sub_path()
+    _ellipse(cr, 0, 0.65, 0.95, 0.35, 0, math.pi)
+    cr.move_to(-0.95, -0.65)
+    cr.line_to(-0.95, 0.65)
+    cr.move_to(0.95, -0.65)
+    cr.line_to(0.95, 0.65)
+
+
+def _glyph_logs(cr):    # lines of text
+    for y, x2 in ((-0.7, 1.0), (0.0, 0.5), (0.7, 0.8)):
+        cr.move_to(-1, y)
+        cr.line_to(x2, y)
+
+
+def _glyph_config(cr):  # a gear
+    cr.arc(0, 0, 0.5, 0, 2 * math.pi)
+    for n in range(8):
+        angle = n * math.pi / 4
+        cr.new_sub_path()
+        cr.move_to(0.7 * math.cos(angle), 0.7 * math.sin(angle))
+        cr.line_to(1.0 * math.cos(angle), 1.0 * math.sin(angle))
+
+
+def _glyph_tool(cr):    # a wrench: a ring open at the far end (the jaw), on a handle. A narrow gap reads as a magnifier
+    cr.arc(-0.42, -0.42, 0.58, 4.88, 9.28)
+    cr.move_to(-0.01, -0.01)
+    cr.line_to(0.95, 0.95)
+
+
+GLYPHS = {"web": _glyph_web, "mail": _glyph_mail, "db": _glyph_db, "logs": _glyph_logs,
+          "config": _glyph_config, "tool": _glyph_tool}
+
+
+def paint_launcher(cr, kind: str, size: float, alpha: float = 1.0, hover: bool = False) -> None:
+    """Draw a launcher's icon, `size` px across, on a cairo context at its top left corner. An unknown class
+    is drawn as a tool. `hover` lightens the badge."""
+    kind = kind if kind in GLYPHS else "tool"
+    r, g, b = LAUNCHER_COLORS[kind]
+    if hover:
+        r, g, b = (c + (1 - c) * 0.25 for c in (r, g, b))
+    radius = size / 2
+    cr.save()
+    cr.translate(radius, radius)
+    cr.set_source_rgba(r, g, b, alpha)
+    cr.arc(0, 0, radius - 0.5, 0, 2 * math.pi)
+    cr.fill()
+    cr.scale(radius * 0.52, radius * 0.52)      # glyph coordinates run -1..1
+    cr.set_source_rgba(1, 1, 1, alpha)
+    cr.set_line_width(0.3)
+    cr.set_line_cap(1)      # round
+    cr.set_line_join(1)
+    GLYPHS[kind](cr)
+    cr.stroke()
+    cr.restore()
 
 
 SIDES = {0: "left", 1: "right", 2: "top", 3: "bottom"}   # Gtk.PositionType, as the tray reports the panel's side
@@ -238,6 +335,33 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
             cr.arc(w / 2, h / 2, min(w, h) / 2 - 1, 0, 2 * math.pi)
             cr.fill()
 
+    class LaunchIcon(Gtk.Button):
+        """A launcher: a round icon whose colour and glyph say what it opens (its class)."""
+
+        def __init__(self, launcher):
+            super().__init__()
+            self.kind, self.hover = launcher.kind, False
+            self.set_relief(Gtk.ReliefStyle.NONE)
+            self.set_focus_on_click(False)
+            self.get_style_context().add_class("lpcp-launch")
+            area = Gtk.DrawingArea()
+            area.set_size_request(ICON_SIZE, ICON_SIZE)
+            area.connect("draw", self.draw)
+            self.add(area)
+            self.connect("enter-notify-event", lambda w, e: self.hovered(True))
+            self.connect("leave-notify-event", lambda w, e: self.hovered(False))
+
+        def hovered(self, hover: bool) -> None:
+            self.hover = hover and self.get_sensitive()
+            window = self.get_window()
+            if window:
+                window.set_cursor(Gdk.Cursor.new_from_name(self.get_display(), "pointer") if self.hover else None)
+            self.queue_draw()
+
+        def draw(self, area, cr):
+            paint_launcher(cr, self.kind, min(area.get_allocated_width(), area.get_allocated_height()),
+                           alpha=1.0 if self.get_sensitive() else 0.3, hover=self.hover and self.get_sensitive())
+
     class ProjectRow(Gtk.ListBoxRow):
         def __init__(self, panel, name):
             super().__init__()
@@ -252,16 +376,42 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
             self.mem = Gtk.Label(xalign=1, width_chars=8)
             for metric in (self.cpu, self.mem):
                 metric.get_style_context().add_class("lpcp-metric")
+            self.panel, self.name = panel, name
+            self.launch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            self.launch_buttons: list = []
+            self.shown_launchers: tuple = ()
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             box.set_margin_start(4)
             box.set_margin_end(8)
             box.pack_start(self.dot, False, False, 0)
             box.pack_start(self.label, True, True, 0)
+            box.pack_start(self.launch_box, False, False, 0)     # left of the stats
             box.pack_start(self.cpu, False, False, 0)
             box.pack_start(self.mem, False, False, 0)
             self.add(box)
 
+        def set_launchers(self, launchers: list, running: bool, error: str | None) -> None:
+            """One round icon per launcher, the default first; they work while the project runs."""
+            if tuple(launchers) != self.shown_launchers:
+                for button in self.launch_buttons:
+                    self.launch_box.remove(button)
+                self.launch_buttons = []
+                for launcher in launchers:
+                    button = LaunchIcon(launcher)
+                    button.connect("clicked", lambda b, lch=launcher: self.panel.launch(self.name, lch))
+                    self.launch_box.pack_start(button, False, False, 0)
+                    self.launch_buttons.append(button)
+                self.launch_box.show_all()
+                self.shown_launchers = tuple(launchers)
+            for button, launcher in zip(self.launch_buttons, launchers):
+                button.set_sensitive(running)
+                tip = launcher.title if running else f"{launcher.title}\n(start the project first)"
+                if error and launcher.builtin:
+                    tip += f"\nIts own launchers can't be read: {error}"
+                button.set_tooltip_text(tip)
+
         def update(self, row: mon.Row, busy: str | None, stats: bool) -> None:
+            self.set_launchers(row.launchers, row.state == "green" and not busy, row.launcher_error)
             self.dot.state, self.dot.busy = row.state, busy
             self.dot.queue_draw()
             if busy:
@@ -326,25 +476,26 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
             self.phase, self.pulsing, self.closed = 0.0, False, False
             self.current: dict[str, mon.Row] = {}
             self.rows: dict[str, ProjectRow] = {}
-            self.error: str | None = None
-            self.message: str | None = None
+            self.reported: dict[str, str] = {}      # failures already sent as a notification
             self.actions = mon.Actions(on_change=lambda: GLib.idle_add(self.action_done))
             self.monitor = mon.Monitor(self.actions.failures)
 
             self.listbox = Gtk.ListBox()
             self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
-            self.status = Gtk.Label(xalign=0, wrap=True, selectable=True)
-            self.status.set_line_wrap_mode(2)  # Pango.WrapMode.WORD_CHAR (long log paths)
+            # A note under the list, only while there is something to say that the rows can't: the first read, or
+            # an unreadable registry / unreachable docker. It's hidden the rest of the time.
+            self.note = Gtk.Label(xalign=0, wrap=True, selectable=True)
+            self.note.set_line_wrap_mode(2)  # Pango.WrapMode.WORD_CHAR (long paths)
             # Wrap at the window's width instead of widening it. The width request also makes the window's height
             # fit the wrapped text (otherwise GTK sizes it for the label at its narrowest, leaving a gap).
-            self.status.set_max_width_chars(1)
-            self.status.set_size_request(WIDTH - 12, -1)
-            self.status.get_style_context().add_class("lpcp-status")
-            self.status.set_no_show_all(True)
-            self.show_status("Reading docker...")
+            self.note.set_max_width_chars(1)
+            self.note.set_size_request(WIDTH - 12, -1)
+            self.note.get_style_context().add_class("lpcp-note")
+            self.note.set_no_show_all(True)
+            self.set_note("Reading docker...")
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             box.pack_start(self.listbox, False, False, 0)
-            box.pack_start(self.status, False, False, 0)
+            box.pack_start(self.note, False, False, 0)
             self.add(box)
             self.connect("destroy", self.on_destroy)
             self.connect("delete-event", self.on_close)
@@ -418,17 +569,15 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
 
         def panic_done(self, message: str) -> bool:
             self.panicking = False
-            self.message = message
-            self.refresh_status()
             self.notify(message)
             self.wake.set()
             return False
 
-        def notify(self, text: str) -> None:
+        def notify(self, text: str, nid: str = "lpcp-panic") -> None:
             note = Gio.Notification.new("LPCP")
             note.set_body(text)
             note.set_icon(Gio.FileIcon.new(Gio.File.new_for_path(str(ICON))))
-            self.get_application().send_notification("lpcp-panic", note)   # same id: replaces the last one
+            self.get_application().send_notification(nid, note)   # same id: replaces the last one
 
         def launcher_click(self) -> None:
             """Another launch handed over to this window: hide it if it's in front, else bring it to the launcher."""
@@ -511,10 +660,11 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
                 self.listbox.show_all()
                 self.resize(max(WIDTH, self.get_size()[0]), 1)   # shrink to fit when rows go away
             self.current = {r.name: r for r in snapshot.rows}
-            self.error = snapshot.error
             for r in snapshot.rows:
                 self.rows[r.name].update(r, self.actions.busy.get(r.name), snapshot.stats)
-            self.refresh_status()
+            self.set_note(snapshot.error)
+            # A failure the monitor has cleared (the project recovered) may notify again if it recurs.
+            self.reported = {n: m for n, m in self.reported.items() if self.actions.failures.get(n) == m}
             return False
 
         # ---- start/stop
@@ -524,17 +674,27 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
             if row is None or name in self.actions.busy:
                 return
             if self.actions.request(name, row.action):
-                self.message = f"{name}: {'starting' if row.action == 'up' else 'stopping'}..."
                 self.rows[name].update(row, row.action, False)
-                self.refresh_status()
                 self.start_pulse()
 
+        def launch(self, name: str, launcher) -> None:
+            """A launch icon: run its launcher off the UI thread. Success needs no message (the browser opens); a
+            failure is a notification."""
+            def work():
+                ok, message = mon.launch(name, None if launcher.builtin else launcher.app)
+                if not ok:
+                    GLib.idle_add(self.notify, message, "lpcp-launch")
+            threading.Thread(target=work, daemon=True).start()
+
         def action_done(self) -> bool:
+            """A start or stop finished. The dot says how it went; a failure is also sent as a notification."""
             if self.closed:
                 return False
-            if self.actions.messages:
-                self.message = self.actions.messages[-1]
-            self.refresh_status()
+            failures = dict(self.actions.failures)
+            for name, message in failures.items():
+                if self.reported.get(name) != message:
+                    self.notify(f"{name}: {message}", f"lpcp-{name}")
+            self.reported = failures
             self.wake.set()
             return False
 
@@ -556,17 +716,14 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
             self.pulsing = bool(busy)
             return self.pulsing
 
-        # ---- status line
+        # ---- the note under the list
 
-        def show_status(self, text: str | None) -> None:
-            if (text or "") == self.status.get_text() and self.status.get_visible() == bool(text):
+        def set_note(self, text: str | None) -> None:
+            if (text or "") == self.note.get_text() and self.note.get_visible() == bool(text):
                 return
-            self.status.set_text(text or "")
-            self.status.set_visible(bool(text))
+            self.note.set_text(text or "")
+            self.note.set_visible(bool(text))
             self.resize(self.get_size()[0], 1)      # fit the new text: shrink after a long message
-
-        def refresh_status(self) -> None:
-            self.show_status(self.error or self.message)
 
         def on_destroy(self, *_) -> None:
             self.closed = True

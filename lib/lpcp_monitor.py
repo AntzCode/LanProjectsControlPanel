@@ -8,7 +8,8 @@ Monitor.snapshot() reads the registry, `docker ps` and `docker stats`, and works
   off    none of its containers publishes its web port
 A container belongs to a project when compose started it from the project's folder (or a folder inside it).
 Actions runs `./dev up <name>` / `./dev down <name>` one at a time in a background thread, logging to
-.state/logs/<name>.log, so the panel and the command line share one code path.
+.state/logs/<name>.log, so the panel and the command line share one code path. Each row also carries the project's
+launchers (its `./dev config.launchers`, or lpcp's own "open its URL"); launch() runs `./dev open <name> --app <app>`.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -128,6 +130,8 @@ class Row:
     mem_gb: float | None = None  # GB (10^9 bytes), summed
     containers: int = 0
     ids: list[str] = field(default_factory=list)    # its running containers
+    launchers: list[lpcp.Launcher] = field(default_factory=list)   # its launch buttons, the default first
+    launcher_error: str | None = None   # its config.launchers answered with something invalid
 
 
 @dataclass
@@ -149,6 +153,24 @@ def docker(args: list[str], timeout: float = 15) -> str:
 class Monitor:
     def __init__(self, failures: dict[str, str] | None = None):
         self.failures = failures if failures is not None else {}
+        self._launchers: dict[str, tuple] = {}      # name -> (key, launchers, error)
+
+    def launchers(self, p: lpcp.Project, settings: dict, ip: str | None) -> tuple[list[lpcp.Launcher], str | None]:
+        """The project's launchers, asked again only when its ./dev, its address or its URL changes."""
+        try:
+            mtime = (p.dir / "dev").stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        key = (str(p.dir), mtime, ip, lpcp.site_url(p, settings, ip))
+        cached = self._launchers.get(p.name)
+        if cached and cached[0] == key:
+            return cached[1], cached[2]
+        try:
+            found, error = lpcp.project_launchers(p, settings, ip), None
+        except lpcp.LpcpError as e:
+            found, error = [lpcp.builtin_launcher(p, settings, ip)], str(e)
+        self._launchers[p.name] = (key, found, error)
+        return found, error
 
     def snapshot(self, stats: bool = True) -> Snapshot:
         try:
@@ -194,8 +216,10 @@ class Monitor:
                 self.failures.pop(name, None)
             if state == "off" and group:
                 why = f"stopped ({len(group)} other container{'s' if len(group) != 1 else ''} of it running)"
+            launchers, launcher_error = self.launchers(p, reg.settings, ip)
             row = Row(name, state, why, "down" if web else "up", ip, lpcp.site_url(p, reg.settings, ip),
-                      containers=len(group), ids=[c.id for c in group])
+                      containers=len(group), ids=[c.id for c in group], launchers=launchers,
+                      launcher_error=launcher_error)
             if group:
                 row.cpu = sum(usage.get(c.id, (0.0, 0.0))[0] for c in group)
                 row.mem_gb = sum(usage.get(c.id, (0.0, 0.0))[1] for c in group) / 1e9
@@ -250,6 +274,29 @@ def _panic(monitor: Monitor) -> tuple[str, str | None]:
         return f"Panic: killing {top.name} failed: {e}", top.name
     return (f"Panic: killed {top.name} ({top.cpu:.0f}% CPU, {len(top.ids)} container"
             f"{'s' if len(top.ids) != 1 else ''}; all: {usage}). Start it again with ./dev up {top.name}"), top.name
+
+
+# --------------------------------------------------------------------------- launch buttons
+
+def launch(name: str, app: str | None) -> tuple[bool, str]:
+    """Run `./dev open <name> [--app <app>]` (the same code path as the command line). -> (ok, message)."""
+    cmd = [sys.executable, str(REPO / "dev"), "open", name] + (["--app", app] if app is not None else [])
+    # Files, not pipes: a browser started in the background may keep inherited pipes open long after the
+    # launch itself has finished.
+    with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+        try:
+            rc = subprocess.run(cmd, cwd=REPO, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                timeout=30).returncode
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, f"{name}: launch failed: {e}"
+        out.seek(0)
+        err.seek(0)
+        stdout, stderr = out.read(), err.read()
+    if rc != 0:
+        lines = [line.strip() for line in (stderr + "\n" + stdout).splitlines() if line.strip()]
+        return False, f"{name}: launch failed: {lines[0].removeprefix('error: ') if lines else f'exit {rc}'}"
+    url = next((line.strip() for line in stdout.splitlines() if "://" in line), "")
+    return True, f"{name}: opened {url}" if url else f"{name}: launched"
 
 
 # --------------------------------------------------------------------------- start/stop

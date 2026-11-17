@@ -276,6 +276,109 @@ def project_env(project: Project, ip: str, settings: dict) -> dict[str, str]:
             "LPCP_URL": site_url(project, settings, ip)}
 
 
+# --------------------------------------------------------------------------- launchers
+#
+# A project lists the ways to open it with `./dev config.launchers`: a JSON list of {"app": ..., "title": ...},
+# the first being the default. `./dev launch --app=<app>` opens one. A project without them (no ./dev, or a ./dev
+# with no config commands) gets lpcp's own: open its URL.
+
+LAUNCHER_TIMEOUT = 5    # seconds: config.* is meant to answer at once, without docker
+
+# What a launcher opens, as the panel's icon shows it. A project may leave "class" out (web). A name that is
+# well-formed but not listed (a newer project, an older lpcp) is kept and drawn as a tool, so it never errors.
+LAUNCHER_CLASSES = ("web", "mail", "db", "logs", "config", "tool")
+DEFAULT_LAUNCHER_CLASS = "web"
+
+
+@dataclass(frozen=True)
+class Launcher:
+    app: str | None     # the --app value; None: run `./dev launch` without --app (or, built in, open the URL)
+    title: str          # the tooltip: a short instruction
+    builtin: bool = False   # lpcp's own "open its URL": the project has no launchers
+    kind: str = DEFAULT_LAUNCHER_CLASS   # its "class": one of LAUNCHER_CLASSES (the icon)
+
+
+def parse_launchers(text: str) -> list[Launcher]:
+    """The output of `./dev config.launchers`. An entry without "app" is accepted: it launches the default."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise LpcpError("config.launchers did not print JSON") from None
+    if not isinstance(data, list) or not data:
+        raise LpcpError("config.launchers must print a non-empty JSON list")
+    out, seen = [], set()
+    for n, item in enumerate(data, 1):
+        if not isinstance(item, dict):
+            raise LpcpError(f"config.launchers entry {n} is not an object")
+        title, app = item.get("title"), item.get("app")
+        if not isinstance(title, str) or not title.strip():
+            raise LpcpError(f"config.launchers entry {n} has no title")
+        if app is None and n > 1:
+            raise LpcpError(f"config.launchers entry {n} has no app (only the first, the default, may leave it out)")
+        if app is not None and not (isinstance(app, str) and NAME_RE.match(app)):
+            raise LpcpError(f"config.launchers entry {n}: app must be lowercase letters, digits and dashes")
+        if app in seen:
+            raise LpcpError(f"config.launchers lists {'the default' if app is None else repr(app)} twice")
+        seen.add(app)
+        kind = item.get("class", DEFAULT_LAUNCHER_CLASS)
+        if not (isinstance(kind, str) and NAME_RE.match(kind)):
+            raise LpcpError(f"config.launchers entry {n}: class must be lowercase letters, digits and dashes "
+                            f"(one of {', '.join(LAUNCHER_CLASSES)})")
+        out.append(Launcher(app, title.strip(), kind=kind))
+    return out
+
+
+def builtin_launcher(project: Project, settings: dict, ip: str | None) -> Launcher:
+    url = site_url(project, settings, ip)
+    return Launcher(None, f"Open {url.split('://', 1)[-1].rstrip('/')} in the browser", builtin=True)
+
+
+def project_launchers(project: Project, settings: dict, ip: str | None = None) -> list[Launcher]:
+    """The project's launchers, from its `./dev config.launchers`; lpcp's own when it provides none.
+    Raises LpcpError when it answers with something that isn't a valid list."""
+    dev = project.dir / "dev"
+    if not (dev.is_file() and os.access(dev, os.X_OK)):
+        return [builtin_launcher(project, settings, ip)]
+    env = {**os.environ, **project_env(project, ip or "", settings)}
+    try:
+        r = subprocess.run([str(dev), "config.launchers"], cwd=project.dir, env=env, text=True,
+                           capture_output=True, timeout=LAUNCHER_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return [builtin_launcher(project, settings, ip)]
+    if r.returncode != 0:                   # no config commands, or no launchers: not provided
+        return [builtin_launcher(project, settings, ip)]
+    return parse_launchers(r.stdout)
+
+
+def open_url(url: str) -> None:
+    opener = shutil.which("xdg-open") or shutil.which("open")
+    if opener is None:
+        raise LpcpError(f"no xdg-open or open to open {url} with")
+    subprocess.Popen([opener, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def launch(project: Project, reg: Registry, app: str | None = None) -> int:
+    """Open one of the project's launchers (the first without `app`): `./dev launch [--app=<app>]` in the
+    project, with the LPCP_* variables set; or, when it has none, open its URL."""
+    ip = project_address(project, reg, load_addresses(), assign=False)
+    launchers = project_launchers(project, reg.settings, ip)
+    if launchers[0].builtin:
+        if app is not None:
+            raise LpcpError(f"{project.name} has no launchers (its ./dev has no config.launchers), so there is "
+                            f"no app {app!r}")
+        url = site_url(project, reg.settings, ip)
+        print(url)
+        open_url(url)
+        return 0
+    if app is not None and app not in {lch.app for lch in launchers}:
+        names = ", ".join(lch.app or "(default)" for lch in launchers)
+        raise LpcpError(f"{project.name} has no app {app!r}; choose from: {names}")
+    env = {**os.environ, **project_env(project, ip or "", reg.settings)}
+    cmd = ["./dev", "launch"] + ([f"--app={app}"] if app is not None else [])
+    return subprocess.run(cmd, cwd=project.dir, env=env, stdin=subprocess.DEVNULL).returncode
+
+
 def fill(template: str, project: Project, ip: str, settings: dict) -> str:
     """Substitute {bind} {host} {url} {name}. Plain replacement, so other braces pass through."""
     for token, value in (("{bind}", ip), ("{host}", project.host),
@@ -549,8 +652,18 @@ def cmd_logs(reg: Registry, args) -> int:
 
 def cmd_open(reg: Registry, args) -> int:
     (p,) = select(reg, [args.site])
-    sh(["xdg-open", site_url(p, reg.settings, project_address(p, reg, load_addresses(), assign=False))])
-    return 0
+    if args.list:
+        launchers = project_launchers(p, reg.settings, project_address(p, reg, load_addresses(), assign=False))
+        if launchers[0].builtin:
+            print(f"(no launchers of its own) {launchers[0].title}")
+            return 0
+        width = max(len(lch.app or "(default)") for lch in launchers)
+        kind_width = max(len(lch.kind) for lch in launchers)
+        for lch in launchers:
+            note = "" if lch.kind in LAUNCHER_CLASSES else f"  (unknown class {lch.kind!r}: shown as a tool)"
+            print(f"{(lch.app or '(default)').ljust(width)}  {lch.kind.ljust(kind_width)}  {lch.title}{note}")
+        return 0
+    return launch(p, reg, args.app)
 
 
 def cmd_add(reg: Registry, args) -> int:
@@ -672,8 +785,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ls", help="list registered sites, their addresses and whether they run")
     p = sub.add_parser("logs", help="follow a site's logs (its ./dev logs)")
     p.add_argument("site")
-    p = sub.add_parser("open", help="open a site in the browser")
+    p = sub.add_parser("open", help="open a site: its default launcher (its ./dev launch), or its URL")
     p.add_argument("site")
+    p.add_argument("--app", help="which of its launchers to open (see --list)")
+    p.add_argument("--list", action="store_true", help="list its launchers (its ./dev config.launchers)")
     p = sub.add_parser("add", help="register a project")
     p.add_argument("name")
     p.add_argument("dir")

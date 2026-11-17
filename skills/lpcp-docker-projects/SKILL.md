@@ -1,6 +1,6 @@
 ---
 name: lpcp-docker-projects
-description: Make a docker/compose project compatible with LanProjectsControlPanel (lpcp), so several projects can run at once on one machine without port conflicts. Use when asked to make a project run side by side with others, to fix port collisions between local projects (web, database or other ports), to add `--bind`, `--lan` or `--host` options to a project's `./dev`, to register a project with the control panel, or when you see a repo with a `./dev up` script and ports published on 127.0.0.1 or 0.0.0.0.
+description: Make a docker/compose project compatible with LanProjectsControlPanel (lpcp), so several projects can run at once on one machine without port conflicts. Use when asked to make a project run side by side with others, to fix port collisions between local projects (web, database or other ports), to add `--bind`, `--lan` or `--host` options to a project's `./dev`, to add `./dev launch` or `./dev config.*` keys such as `config.launchers` (launch buttons in the panel), to register a project with the control panel, or when you see a repo with a `./dev up` script and ports published on 127.0.0.1 or 0.0.0.0.
 ---
 
 # Making a docker project work with LanProjectsControlPanel (lpcp)
@@ -44,6 +44,9 @@ Rules:
 5. `./dev down` stops the project; `./dev logs` follows its logs (optional).
 6. Optional: when `LPCP_URL` is set (lpcp sets `LPCP_URL`, `LPCP_HOST`, `LPCP_BIND`, `LPCP_PROJECT` when it
    starts a project), use it as the app's public base URL and for CORS/allowed origins.
+7. `./dev launch` opens the project's default entry point, normally its URL in the browser;
+   `./dev launch --app=NAME` opens another one. `./dev config.launchers` lists them, and lpcp shows one launch
+   button per launcher on the project's entry. See "Config API" and "Launchers" below.
 
 About names and the hosts file:
 - `*.localhost` names need no hosts entry: they always resolve to 127.0.0.1. So `./dev up --host
@@ -71,12 +74,16 @@ About names and the hosts file:
 4. **`./dev`:** add the option parsing below to the existing `up` handling, keeping everything else it does. If
    it already has `--lan` or other flags, merge into its existing parsing and keep them working in any order.
    If it has no `--lan`, add it. If the project has no `./dev`, don't invent one unless asked: register it with
-   a custom command (step 6). After starting, print the URL: `http://<host or address>[:port]`.
-5. **Private ports** (database, internal API, mail catcher) use `${PRIVATE_BIND:-127.0.0.1}` instead of
+   a custom command (step 7). After starting, print the URL: `http://<host or address>[:port]`.
+5. **Launchers:** add `launch` and `config.launchers` to `./dev` (see "Launchers" below). Choose the
+   launchers from what the project serves: the site itself, a mail catcher, an admin area, a data or API
+   browser, docs. Give each a `class` (web, mail, db, logs, config, tool) so its icon says what it opens. The
+   first is the default. If the project has no `./dev`, skip this: lpcp falls back to its own URL.
+6. **Private ports** (database, internal API, mail catcher) use `${PRIVATE_BIND:-127.0.0.1}` instead of
    `${BIND...}`. `./dev` sets PRIVATE_BIND only when `--bind` is another loopback address (127.*), so private
    ports move with the project under lpcp (no collisions) but never onto the network with `--lan` or a LAN
    `--bind`. Tell the user which ports you treated as private.
-6. **Register** (from the lpcp repo): `./dev add <name> <path-to-project>`, adding `--port N` if the web port
+7. **Register** (from the lpcp repo): `./dev add <name> <path-to-project>`, adding `--port N` if the web port
    isn't 80.
    - If the project accepts `--host`, also add `--up './dev up --bind={bind} --host={host}'`, so it answers to
      its `<name>.localhost` name behind the proxy.
@@ -85,7 +92,7 @@ About names and the hosts file:
    - For a project with no `./dev`:
      `./dev add blog ~/blog --up 'BIND={bind} docker compose up -d --wait' --down 'docker compose stop'`.
    - `./dev ls` shows the result.
-7. **Verify** (see below). Report what you ran and saw.
+8. **Verify** (see below). Report what you ran and saw.
 
 ## Option parsing for a bash `./dev`
 
@@ -118,6 +125,129 @@ fi
 
 A full reference script and compose file are in `examples/` in the lpcp repo.
 
+## Config API
+
+`./dev config.<key>` is how a project describes itself to lpcp. `config.launchers` is the first key; later
+keys will cover things like branding color, logo and short name. Every key follows the same rules:
+
+- It prints one JSON value on stdout and exits 0. Nothing else goes to stdout (messages go to stderr).
+- It is read-only and quick: it works when the project is stopped and needs no docker, network or tool
+  beyond bash.
+- An unknown `config.*` key prints an error on stderr and exits 2. lpcp treats any non-zero exit (including
+  from an older `./dev` that has no config commands) as "not provided" and uses its own default.
+- Key names are lowercase words joined with `-` (`config.launchers`, `config.short-name`).
+- Add only the keys the project actually provides. Don't add empty or placeholder keys.
+
+## Launchers
+
+A launcher is one way to open the project: its site in the browser, an admin area, a data browser, a docs
+page. lpcp runs `./dev config.launchers` in the project's directory and shows one round icon per entry. An
+icon runs `./dev launch --app=<app>` there, with the `LPCP_*` variables set as for `./dev up`.
+
+**`./dev config.launchers`** prints a JSON array:
+
+```json
+[{"app":"site","title":"Open dev.scripture.tips in the browser"},
+ {"app":"mail","title":"Open the mail catcher","class":"mail"},
+ {"app":"data","title":"Open the data browser","class":"db"}]
+```
+
+- `app`: a short id (lowercase letters, digits, `-`), unique within the project. It is the value `--app`
+  takes.
+- `title`: the icon's tooltip, a short instruction in the project's UI language.
+- `class` (optional, default `web`): what it opens, which picks the icon's colour and glyph, so the user can
+  tell the icons apart before reading a tooltip. Choose by what the launcher opens, from this fixed set:
+
+  | class | icon | use it for |
+  |---|---|---|
+  | `web` | blue globe | the site itself (the default) |
+  | `mail` | orange envelope | a mail catcher (Mailpit) or webmail |
+  | `db` | purple cylinder | a database or data browser (Adminer, pgAdmin, an API explorer) |
+  | `logs` | teal lines | logs, docs, anything the user reads |
+  | `config` | amber gear | settings or an admin area |
+  | `tool` | grey wrench | anything else: a shell, a profiler, another dev tool |
+
+  Don't invent class names: an unknown one is drawn as a `tool` and `./dev open <name> --list` flags it.
+  Leave `class` out for ordinary web pages.
+- At least one entry. **The first is the default**, the one plain `./dev launch` opens.
+
+**`./dev launch [--app=NAME]`** (also `--app NAME`) opens that launcher, or the first one without `--app`.
+- The URL is `$LPCP_URL` plus the launcher's path when `LPCP_URL` is set; otherwise it is the URL plain
+  `./dev up` prints.
+- It prints the URL, then opens it with `xdg-open` (Linux) or `open` (macOS), detached. With neither
+  available it only prints it.
+- `--print` prints the URL without opening anything (for scripts and for verifying).
+- An unknown `--app` exits 2 and names the valid ones.
+- It doesn't start the project. If the project is down, it says so on stderr and exits 1.
+- A launcher may run something other than a browser (a desktop tool, a terminal). It still has an `app` and
+  a `title` and is started the same way.
+
+Keep the launchers in one place in `./dev`, so the list and what `launch` opens can't disagree:
+
+```bash
+# One launcher per line: app|title|path|class. The first line is the default. No "|" inside a title.
+# The class is optional (web) and goes last, so a line without it still works.
+launchers() {
+  cat <<'EOF'
+site|Open dev.scripture.tips in the browser|/
+mail|Open the mail catcher|/mail/|mail
+data|Open the data browser|/data/|db
+EOF
+}
+base_url() { echo "${LPCP_URL:-http://${SITE_HOST:-localhost}}"; }   # what plain ./dev up prints
+
+json_str() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
+
+config_launchers() {
+  local first=1 app title path kind
+  printf '['
+  while IFS='|' read -r app title path kind; do
+    [[ -n "$app" ]] || continue
+    (( first )) || printf ','
+    first=0
+    printf '{"app":%s,"title":%s' "$(json_str "$app")" "$(json_str "$title")"
+    [[ -z "$kind" ]] || printf ',"class":%s' "$(json_str "$kind")"
+    printf '}'
+  done < <(launchers)
+  printf ']\n'
+}
+
+cmd_launch() {
+  local want="" print="" app title path kind url=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --app=*) want="${1#--app=}"; shift ;;
+      --app)   want="${2:?--app needs a name}"; shift 2 ;;
+      --print) print=1; shift ;;
+      *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+  done
+  while IFS='|' read -r app title path kind; do
+    [[ -n "$app" ]] || continue
+    if [[ -z "$want" || "$app" == "$want" ]]; then url="$(base_url)${path}"; break; fi
+  done < <(launchers)
+  if [[ -z "$url" ]]; then
+    echo "unknown app '$want'; choose from: $(launchers | cut -d'|' -f1 | paste -sd' ')" >&2; exit 2
+  fi
+  echo "$url"
+  [[ -n "$print" ]] && return 0
+  if ! curl -ks -o /dev/null --max-time 3 "$url"; then echo "the project isn't running: ./dev up first" >&2; exit 1; fi
+  if command -v xdg-open >/dev/null; then xdg-open "$url" >/dev/null 2>&1 &
+  elif command -v open >/dev/null; then open "$url"
+  fi
+}
+```
+
+In the command dispatch, next to `up` and `down`:
+
+```bash
+  launch)           shift; cmd_launch "$@" ;;
+  config.launchers) config_launchers ;;
+  config.*)         echo "unknown config key: ${1#config.}" >&2; exit 2 ;;
+```
+
+If the project's `./dev` is not bash, implement the same contract in its language.
+
 ## Verify
 
 Do all of these. Leave nothing running that wasn't running before.
@@ -136,8 +266,14 @@ Do all of these. Leave nothing running that wasn't running before.
 5. **Two at once:** from the lpcp repo, `./dev up <name> <another>`, then `curl -k https://<name>.localhost`
    (or the project's own URL), and `./dev ls`. If `./dev up` reports a 0.0.0.0 holder, something was started
    with `--lan`: ask the user before stopping it.
-6. `git diff` in the project should show only the port addresses, the hostname variable, the option parsing,
-   and docs.
+6. **Launchers**, with the project stopped: `./dev config.launchers | python3 -m json.tool` is valid JSON with
+   at least one entry and nothing else on stdout, and every `class` is one of web, mail, db, logs, config,
+   tool (or absent); `./dev config.nope` exits 2. `./dev launch --print` and
+   `./dev launch --print --app=<app>` for each launcher print the expected URLs; `--app=nope` exits 2;
+   `./dev launch` (without `--print`) exits 1 with a message. With the project up, `curl -ks` each printed URL
+   gets the app. Don't open browser windows to test.
+7. `git diff` in the project should show only the port addresses, the hostname variable, the option parsing,
+   the launch and config commands, and docs.
 
 ## Don't
 
@@ -150,4 +286,6 @@ Do all of these. Leave nothing running that wasn't running before.
 - Don't let a database or unauthenticated API follow `--lan` or `--bind` onto a network address.
 - Don't stop or restart other projects' running stacks without asking.
 - Don't edit a real project without being asked. Propose the diff first when the user only asked how it works.
+- Don't print anything but the JSON value on stdout from a `config.*` command, and don't make one start
+  containers, call the network, or depend on lpcp.
 - Don't stage or commit for the user.

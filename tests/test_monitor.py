@@ -150,6 +150,38 @@ bind = "127.0.0.3"
         self.assertEqual(snap.rows, [])
         self.assertIn("projects.toml", snap.error)
 
+    def test_launchers(self):
+        r = self.root
+        (r / "web" / "dev").write_text("#!/usr/bin/env bash\necho x >> asked\n"
+                                       "echo '[{\"app\":\"site\",\"title\":\"Open the site\"}]'\n")
+        (r / "web" / "dev").chmod(0o755)
+        (r / "lan" / "dev").write_text("#!/usr/bin/env bash\necho broken\n")
+        (r / "lan" / "dev").chmod(0o755)
+        monitor = mon.Monitor()
+        for _ in range(2):
+            with mock.patch.object(mon, "docker", lambda args, timeout=15: ""), \
+                    mock.patch.object(lpcp, "listening", lambda port, host="127.0.0.1": False):
+                rows = {row.name: row for row in monitor.snapshot().rows}
+        self.assertEqual(rows["web"].launchers, [lpcp.Launcher("site", "Open the site")])
+        self.assertEqual((r / "web" / "asked").read_text(), "x\n")       # asked once, then cached
+        # No ./dev: lpcp's own button. Invalid output: the same, with the reason kept for the tooltip.
+        self.assertTrue(rows["idle"].launchers[0].builtin)
+        self.assertIsNone(rows["idle"].launcher_error)
+        self.assertTrue(rows["lan"].launchers[0].builtin)
+        self.assertIn("JSON", rows["lan"].launcher_error)
+
+    def test_launch_message(self):
+        def run(cmd, stdout, stderr, **kw):
+            if cmd[-1] == "bad":
+                stderr.write("error: st has no app 'bad'; choose from: site\n")
+                return SimpleNamespace(returncode=1)
+            stdout.write("https://dev.example.test/\n")
+            return SimpleNamespace(returncode=0)
+        with mock.patch.object(mon.subprocess, "run", run):
+            self.assertEqual(mon.launch("st", "site"), (True, "st: opened https://dev.example.test/"))
+            self.assertEqual(mon.launch("st", "bad"),
+                             (False, "st: launch failed: st has no app 'bad'; choose from: site"))
+
     def test_docker_unreachable(self):
         def docker(args, timeout=15):
             raise lpcp.LpcpError("Cannot connect to the Docker daemon")
@@ -302,6 +334,40 @@ class TrayAnchor(unittest.TestCase):
     def test_panel_positions(self):
         import lpcp_ui
         self.assertEqual([lpcp_ui.SIDES[n] for n in range(4)], ["left", "right", "top", "bottom"])
+
+
+class LauncherIcons(unittest.TestCase):
+    """Each launcher class has its own round icon (drawn with cairo, so no display is needed)."""
+
+    def render(self, kind, **kw):
+        try:
+            import cairo
+        except ImportError:
+            self.skipTest("pycairo is not installed")
+        import lpcp_ui
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 20, 20)
+        lpcp_ui.paint_launcher(cairo.Context(surface), kind, 20, **kw)
+        return bytes(surface.get_data())
+
+    def test_every_class_has_an_icon(self):
+        import lpcp_ui
+        self.assertEqual(set(lpcp_ui.GLYPHS), set(lpcp.LAUNCHER_CLASSES))
+        self.assertEqual(set(lpcp_ui.LAUNCHER_COLORS), set(lpcp.LAUNCHER_CLASSES))
+
+    def test_icons_are_round_and_different(self):
+        images = {kind: self.render(kind) for kind in lpcp.LAUNCHER_CLASSES}
+        self.assertEqual(len(set(images.values())), len(images))          # no two look alike
+        for kind, data in images.items():
+            pixels = [data[i:i + 4] for i in range(0, len(data), 4)]       # BGRA, 20x20
+            self.assertEqual(pixels[0][3], 0, kind)                       # the corner is transparent: a circle
+            self.assertEqual(pixels[10 * 20 + 10][3], 255, kind)          # the middle is solid
+            self.assertTrue(any(p[:3] == b"\xff\xff\xff" for p in pixels), kind)   # the white glyph is there
+
+    def test_states(self):
+        normal = self.render("web")
+        self.assertNotEqual(normal, self.render("web", hover=True))
+        self.assertNotEqual(normal, self.render("web", alpha=0.3))
+        self.assertEqual(self.render("nonsense"), self.render("tool"))    # unknown class: a tool
 
 
 class Launcher(unittest.TestCase):

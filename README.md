@@ -65,7 +65,7 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
 | `./dev restart [site...]` | Stop then start |
 | `./dev ls` | Registered sites, their addresses, URLs and whether they are running |
 | `./dev logs <site>` | Follow a site's logs (runs its `logs` command, default `./dev logs`) |
-| `./dev open <site>` | Open it in the browser |
+| `./dev open <site> [--app A] [--list]` | Open it: runs its `./dev launch [--app=A]`, or opens its URL when it has no launchers. `--list` shows its launchers |
 | `./dev add <name> <dir> [options]` | Register a project: `--bind auto\|lan\|IP`, `--port N`, `--host H`, `--no-proxy`, `--url U`, `--up CMD`, `--down CMD` |
 | `./dev rm <name>` | Unregister (does not stop it) |
 | `./dev proxy up\|down\|reload\|status` | Control the proxy directly |
@@ -80,8 +80,8 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
 `./dev ui` opens a small window (450 px wide) with one row per registered project:
 
 ```
-●  nan                                   12.3%   1.4 GB
-●  st                                     0.8%   0.3 GB
+●  nan                            12.3%   1.4 GB  [open]
+●  st                              0.8%   0.3 GB  [site] [data]
 ```
 
 - **The dot** is green when the project's web port is published and answers, red when its last start from the
@@ -92,8 +92,29 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
   percent of one core, memory in GB), and refresh every few seconds. A project's containers are the ones compose
   started from its folder (or a folder inside it), so a stopped project can still show usage (its test
   containers, for example).
-- The line at the bottom shows the last result or error. Each start/stop is logged to `.state/logs/<name>.log`
-  (in this repo's folder, next to `projects.toml`; git-ignored).
+- **Launchers**: round icons between the name and the CPU/memory figures, one per launcher the project lists
+  with `./dev config.launchers` (a JSON list of `{"app": ..., "title": ..., "class": ...}`, the default first;
+  see the skill in `skills/lpcp-docker-projects`). The icon's colour and glyph show what it opens, so you can
+  tell them apart before reading the tooltip (the launcher's title):
+
+  | class | icon | opens |
+  |---|---|---|
+  | `web` (default) | blue globe | the site itself in the browser |
+  | `mail` | orange envelope | a mail catcher or webmail |
+  | `db` | purple cylinder | a database or data browser |
+  | `logs` | teal lines | logs, docs, anything you read |
+  | `config` | amber gear | settings or an admin area |
+  | `tool` | grey wrench | anything else, such as a shell or a dev tool |
+
+  A class this version doesn't know is drawn as a tool. A click runs `./dev open <name> --app <app>`, which runs
+  the project's `./dev launch --app=<app>` with the `LPCP_*` variables set. A project without launchers gets one
+  `web` icon for its URL. The icons work while the project runs (dimmed otherwise) and are right-aligned, so
+  every row's last icon sits against the CPU figure. The list is read again when the project's `./dev` changes; `./dev open <name> --list`
+  shows each launcher's class.
+- The window has no status bar. The dot shows how a start or stop went (red if it failed), and a failed start,
+  stop or launch is also sent as a desktop notification. A note appears under the list only when the panel
+  can't read the projects at all (docker unreachable, a broken `projects.toml`), and goes away when it can. Each
+  start/stop is logged to `.state/logs/<name>.log` (in this repo's folder, next to `projects.toml`; git-ignored).
 - Edits to `projects.toml` show up without restarting the panel. Closing the window leaves every project as it is.
   Opening it again while it's open brings the existing window to the front, or minimizes it if it's already in
   front (hides it, in tray mode).
@@ -115,7 +136,7 @@ and keeps the window hidden until you need it:
   struggles. It measures CPU fresh (about 2 seconds), then `docker kill`s that project's containers: no graceful
   stop, so it works under load. The containers are stopped, not removed, so `./dev up <name>` brings it back. It
   kills nothing if no project uses 5% CPU or more, and never touches containers outside the registry. The window
-  stays as it is; the result appears as a desktop notification and in the window's status line, and every panic
+  stays as it is; the result appears as a desktop notification, and every panic
   is logged to `.state/logs/panic.log` (and the killed project's own log). Tray only.
 - Closing the window hides it; the icon stays. While it's hidden the panel doesn't call docker at all.
 - `./dev ui --tray --install` adds the menu launcher and starts the icon at login
