@@ -138,6 +138,7 @@ def paint_launcher(cr, kind: str, size: float, alpha: float = 1.0, hover: bool =
 
 
 SIDES = {0: "left", 1: "right", 2: "top", 3: "bottom"}   # Gtk.PositionType, as the tray reports the panel's side
+TRAY_WAIT = 30.0       # s: how long --tray waits for the panel's tray applet to appear (it starts late at login)
 FOCUS_GRACE = 0.5       # s: a tray click this soon after the window lost focus still counts as "it was in front"
 
 
@@ -249,8 +250,12 @@ def load_xapp():
         from gi.repository import XApp
     except (ImportError, ValueError):
         return None, "the tray icon needs XApp (Linux Mint: gir1.2-xapp-1.0)"
-    if not XApp.StatusIcon.any_monitors():
-        return None, "no XApp tray on the panel (Linux Mint: add the 'XApp Status Applet' to a panel)"
+    # At login this can start before the panel's tray applet is up: give it a while instead of giving up.
+    deadline = time.monotonic() + TRAY_WAIT
+    while not XApp.StatusIcon.any_monitors():
+        if time.monotonic() >= deadline:
+            return None, "no XApp tray on the panel (Linux Mint: add the 'XApp Status Applet' to a panel)"
+        time.sleep(0.5)
     return XApp, None
 
 
