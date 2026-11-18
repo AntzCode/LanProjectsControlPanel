@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -24,6 +25,8 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import lpcp_logs
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 DEFAULTS = {
@@ -296,6 +299,7 @@ class Launcher:
     title: str          # the tooltip: a short instruction
     builtin: bool = False   # lpcp's own "open its URL": the project has no launchers
     kind: str = DEFAULT_LAUNCHER_CLASS   # its "class": one of LAUNCHER_CLASSES (the icon)
+    viewer: bool = False    # lpcp's own log viewer: the project lists log sources (`./dev config.logs`)
 
 
 def parse_launchers(text: str) -> list[Launcher]:
@@ -348,6 +352,46 @@ def project_launchers(project: Project, settings: dict, ip: str | None = None) -
     if r.returncode != 0:                   # no config commands, or no launchers: not provided
         return [builtin_launcher(project, settings, ip)]
     return parse_launchers(r.stdout)
+
+
+# --------------------------------------------------------------------------- logs
+#
+# A project lists its logs with `./dev config.logs` (see lpcp_logs.py): a JSON list of sources, each a command
+# that streams or a file. lpcp's log viewer (./dev logview, and a logs icon in the panel) shows them with one
+# interface: filter, find, pause, follow.
+
+def log_launcher(sources: list[lpcp_logs.LogSource]) -> Launcher:
+    names = ", ".join(src.id for src in sources)
+    return Launcher(None, f"View logs ({names})", kind="logs", viewer=True)
+
+
+def project_log_sources(project: Project, settings: dict, ip: str | None = None) -> list[lpcp_logs.LogSource]:
+    """The project's log sources, from its `./dev config.logs`; none when it provides none (no ./dev, no config
+    commands, or a non-zero exit). Raises LpcpError when it answers with something that isn't a valid list."""
+    dev = project.dir / "dev"
+    if not (dev.is_file() and os.access(dev, os.X_OK)):
+        return []
+    env = {**os.environ, **project_env(project, ip or "", settings)}
+    try:
+        r = subprocess.run([str(dev), "config.logs"], cwd=project.dir, env=env, text=True,
+                           capture_output=True, timeout=LAUNCHER_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if r.returncode != 0:
+        return []
+    try:
+        return lpcp_logs.parse_log_sources(r.stdout)
+    except lpcp_logs.LogError as e:
+        raise LpcpError(str(e)) from None
+
+
+def pick_log_source(project: Project, sources: list[lpcp_logs.LogSource], wanted: str | None) -> lpcp_logs.LogSource:
+    if wanted is None:
+        return sources[0]
+    for src in sources:
+        if src.id == wanted:
+            return src
+    raise LpcpError(f"{project.name} has no log source {wanted!r}; choose from: {', '.join(src.id for src in sources)}")
 
 
 def open_url(url: str) -> None:
@@ -646,8 +690,49 @@ def cmd_ls(reg: Registry, args) -> int:
 
 
 def cmd_logs(reg: Registry, args) -> int:
+    """Without options: the project's own `./dev logs`. With --list, --source, --grep or --exclude: one of its
+    log sources (`./dev config.logs`), filtered, written to stdout until it ends or Ctrl-C."""
     (p,) = select(reg, [args.site])
-    return run_project(p, p.logs, project_address(p, reg, load_addresses(), assign=False) or "", reg)
+    ip = project_address(p, reg, load_addresses(), assign=False)
+    if not (args.list or args.source or args.grep or args.exclude):
+        return run_project(p, p.logs, ip or "", reg)
+    sources = project_log_sources(p, reg.settings, ip)
+    if not sources:
+        raise LpcpError(f"{p.name} has no log sources (its ./dev has no config.logs)")
+    if args.list:
+        width = max(len(src.id) for src in sources)
+        for src in sources:
+            print(f"{src.id.ljust(width)}  {src.kind.ljust(4)}  {src.title}  ({src.cmd or src.file})")
+        return 0
+    source = pick_log_source(p, sources, args.source)
+    try:
+        flt = lpcp_logs.LineFilter(args.grep or "", args.exclude or "", args.ignore_case)
+    except lpcp_logs.LogError as e:
+        raise LpcpError(str(e)) from None
+    stream = lpcp_logs.Stream(source, p.dir, project_env(p, ip or "", reg.settings))
+    if stream.error:
+        raise LpcpError(f"{source.id}: {stream.error}")
+    # A terminated or hung-up ./dev must still end the source's processes (a following tail, docker compose logs)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda signum, _frame: sys.exit(128 + signum))
+    try:
+        return lpcp_logs.follow(stream, flt, lambda line: print(line, flush=True))
+    except BrokenPipeError:
+        return 0
+    finally:
+        stream.stop()
+
+
+def cmd_logview(reg: Registry, args) -> int:
+    """The log viewer window for one project (GTK)."""
+    (p,) = select(reg, [args.site])
+    ip = project_address(p, reg, load_addresses(), assign=False)
+    sources = project_log_sources(p, reg.settings, ip)
+    if not sources:
+        raise LpcpError(f"{p.name} has no log sources (its ./dev has no config.logs)")
+    pick_log_source(p, sources, args.source)
+    import lpcp_logview  # GTK is only needed for the window
+    return lpcp_logview.main(p, sources, project_env(p, ip or "", reg.settings), args.source)
 
 
 def cmd_open(reg: Registry, args) -> int:
@@ -783,8 +868,17 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=helptext)
         p.add_argument("sites", nargs="*", metavar="site")
     sub.add_parser("ls", help="list registered sites, their addresses and whether they run")
-    p = sub.add_parser("logs", help="follow a site's logs (its ./dev logs)")
+    p = sub.add_parser("logs", help="follow a site's logs (its ./dev logs), or one of its log sources "
+                       "(its ./dev config.logs) with --source, --grep and --exclude")
     p.add_argument("site")
+    p.add_argument("--list", action="store_true", help="list its log sources")
+    p.add_argument("--source", help="show this log source (default: the first)")
+    p.add_argument("-e", "--grep", metavar="PATTERN", help="only lines matching this regular expression")
+    p.add_argument("-v", "--exclude", metavar="PATTERN", help="leave out lines matching this regular expression")
+    p.add_argument("-i", "--ignore-case", action="store_true", help="ignore case in --grep and --exclude")
+    p = sub.add_parser("logview", help="open a site's logs in the log viewer window (needs GTK 3 for Python)")
+    p.add_argument("site")
+    p.add_argument("--source", help="start on this log source (default: the first)")
     p = sub.add_parser("open", help="open a site: its default launcher (its ./dev launch), or its URL")
     p.add_argument("site")
     p.add_argument("--app", help="which of its launchers to open (see --list)")
@@ -815,7 +909,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 COMMANDS = {"up": cmd_up, "down": cmd_down, "restart": cmd_restart, "ls": cmd_ls, "logs": cmd_logs,
-            "open": cmd_open, "add": cmd_add, "rm": cmd_rm, "proxy": cmd_proxy, "trust": cmd_trust,
+            "logview": cmd_logview, "open": cmd_open, "add": cmd_add, "rm": cmd_rm, "proxy": cmd_proxy, "trust": cmd_trust,
             "doctor": cmd_doctor}
 
 

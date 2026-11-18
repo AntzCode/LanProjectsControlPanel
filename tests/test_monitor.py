@@ -152,7 +152,8 @@ bind = "127.0.0.3"
 
     def test_launchers(self):
         r = self.root
-        (r / "web" / "dev").write_text("#!/usr/bin/env bash\necho x >> asked\n"
+        (r / "web" / "dev").write_text("#!/usr/bin/env bash\n[[ \"$1\" == config.launchers ]] || exit 2\n"
+                                       "echo x >> asked\n"
                                        "echo '[{\"app\":\"site\",\"title\":\"Open the site\"}]'\n")
         (r / "web" / "dev").chmod(0o755)
         (r / "lan" / "dev").write_text("#!/usr/bin/env bash\necho broken\n")
@@ -169,6 +170,41 @@ bind = "127.0.0.3"
         self.assertIsNone(rows["idle"].launcher_error)
         self.assertTrue(rows["lan"].launchers[0].builtin)
         self.assertIn("JSON", rows["lan"].launcher_error)
+
+    def test_log_viewer_icon(self):
+        """A project that lists log sources (./dev config.logs) gets lpcp's own logs icon after its launchers."""
+        r = self.root
+        (r / "web" / "dev").write_text(
+            "#!/usr/bin/env bash\ncase \"$1\" in\n"
+            "  config.launchers) echo '[{\"app\":\"site\",\"title\":\"Open the site\"}]' ;;\n"
+            "  config.logs) echo '[{\"id\":\"app\",\"title\":\"App\",\"cmd\":\"docker compose logs -f\"},"
+            "{\"id\":\"err\",\"title\":\"Errors\",\"file\":\"data/error.log\"}]' ;;\n"
+            "  *) exit 2 ;;\nesac\n")
+        (r / "web" / "dev").chmod(0o755)
+        (r / "lan" / "dev").write_text("#!/usr/bin/env bash\n[[ \"$1\" == config.logs ]] && echo not json\nexit 0\n")
+        (r / "lan" / "dev").chmod(0o755)
+        with mock.patch.object(mon, "docker", lambda args, timeout=15: ""), \
+                mock.patch.object(lpcp, "listening", lambda port, host="127.0.0.1": False):
+            rows = {row.name: row for row in mon.Monitor().snapshot().rows}
+        site, viewer = rows["web"].launchers
+        self.assertEqual(site, lpcp.Launcher("site", "Open the site"))
+        self.assertEqual((viewer.viewer, viewer.kind, viewer.title), (True, "logs", "View logs (app, err)"))
+        self.assertFalse(site.viewer)
+        self.assertEqual([lch.viewer for lch in rows["idle"].launchers], [False])      # no ./dev: no logs icon
+        # Invalid log sources: no icon, and the reason is kept for the tooltip
+        self.assertFalse(any(lch.viewer for lch in rows["lan"].launchers))
+        self.assertIn("JSON", rows["lan"].launcher_error)
+
+    def test_open_logs_runs_logview_detached(self):
+        with mock.patch.object(mon.subprocess, "Popen") as popen:
+            self.assertEqual(mon.open_logs("blog"), (True, "blog: opened the log viewer"))
+        cmd = popen.call_args.args[0]
+        self.assertEqual(cmd[1:], [str(mon.REPO / "dev"), "logview", "blog"])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])      # outlives the panel
+        with mock.patch.object(mon.subprocess, "Popen", side_effect=OSError("no python")):
+            ok, message = mon.open_logs("blog")
+        self.assertFalse(ok)
+        self.assertIn("no python", message)
 
     def test_launch_message(self):
         def run(cmd, stdout, stderr, **kw):

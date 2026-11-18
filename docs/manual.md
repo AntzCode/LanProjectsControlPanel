@@ -65,6 +65,8 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
 | `./dev restart [site...]` | Stop then start |
 | `./dev ls` | Registered sites, their addresses, URLs and whether they are running |
 | `./dev logs <site>` | Follow a site's logs (runs its `logs` command, default `./dev logs`) |
+| `./dev logs <site> --list \| --source ID [-e PATTERN] [-v PATTERN] [-i]` | Its log sources (`./dev config.logs`): list them, or print one, filtered like `grep -E` / `grep -v`, until Ctrl-C |
+| `./dev logview <site> [--source ID]` | Open its logs in the log viewer window (needs GTK 3 for Python) |
 | `./dev open <site> [--app A] [--list]` | Open it: runs its `./dev launch [--app=A]`, or opens its URL when it has no launchers. `--list` shows its launchers |
 | `./dev add <name> <dir> [options]` | Register a project: `--bind auto\|lan\|IP`, `--port N`, `--host H`, `--no-proxy`, `--url U`, `--up CMD`, `--down CMD` |
 | `./dev rm <name>` | Unregister (does not stop it) |
@@ -111,6 +113,9 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
   `web` icon for its URL. The icons work while the project runs (dimmed otherwise) and are right-aligned, so
   every row's last icon sits against the CPU figure. The list is read again when the project's `./dev` changes; `./dev open <name> --list`
   shows each launcher's class.
+- **Logs icon**: a project that lists log sources with `./dev config.logs` gets one more teal icon after its
+  launchers, which opens the log viewer (below). It works while the project is stopped, since log files can
+  still be read.
 - The window has no status bar. The dot shows how a start or stop went (red if it failed), and a failed start,
   stop or launch is also sent as a desktop notification. A note appears under the list only when the panel
   can't read the projects at all (docker unreachable, a broken `projects.toml`), and goes away when it can. Each
@@ -123,6 +128,26 @@ A project has to accept `--bind` first. See [Making a project compatible](#makin
   Launched from a menu or a terminal, it stays where the window manager puts it. On a monitor whose work area GTK
   doesn't know (any but the primary one, on X11), a launch within 64 px of an edge counts as a panel click; top and
   bottom win in a corner.
+
+### Log viewer
+
+`./dev logview <site>` (or the logs icon) opens one window for a project's logs, whatever they are: a streaming
+command such as `docker compose logs -f`, or a file. The project lists them with `./dev config.logs` (a JSON list
+of `{"id": ..., "title": ..., "cmd": ...}` or `"file": ...`; see the skill in `skills/lpcp-docker-projects`).
+
+- **Source**: pick between the project's logs. A file shows its last 500 lines then follows it (`tail -F`).
+- **Filter**: show only lines matching a regular expression, and hide lines matching another (`grep -E` and
+  `grep -v`). "Match case" applies to both and to find. A bad expression is flagged and the last good filter stays.
+- **Find** (Ctrl+F): highlights every match in the lines shown; Enter or F3 next, Shift+F3 previous.
+- **Pause** (Ctrl+P): freezes the display while the log keeps collecting; resuming shows what arrived.
+- **Follow**: keeps the newest line in view. Scrolling up stops it; scrolling back to the end resumes it.
+- Errors are red and warnings amber. **Wrap**, **Clear** (the window only), **Copy** and **Save…** (the lines
+  shown) are in the toolbar.
+- The window keeps the newest 20,000 lines. Closing it (or killing it) ends the source's processes. Each project
+  has one window: opening it again brings it forward.
+
+The same sources work on the command line: `./dev logs <site> --list`, and `./dev logs <site> --source ID -e
+PATTERN -v PATTERN -i` prints one, filtered, until Ctrl-C.
 
 ### Tray icon (Linux Mint)
 
@@ -192,7 +217,8 @@ The contract is small, and a project that follows it still runs on its own witho
    base URL, allowed hosts and certificate. It combines with any of the above. `./dev up --host phuppi.loc` is
    reachable at `http://phuppi.loc` once `/etc/hosts` has `127.0.0.1 phuppi.loc` (or the `--bind` address).
    `*.localhost` names need no entry.
-5. `./dev down` stops it (and `./dev logs` follows its logs, optionally).
+5. `./dev down` stops it (and `./dev logs` follows its logs, optionally). `./dev config.logs` lists its log
+   files and streams for the log viewer, optionally.
 6. Optional: read `LPCP_URL` as the app's public URL when it is set.
 7. **The registered port is the front door.** lpcp's proxy sends `https://<name>.localhost` to the one port the
    project is registered with (`--port`, default 80), so that port must route every path the browser uses: the
@@ -263,7 +289,10 @@ python3 -m unittest discover -s tests
 ```
 
 Covers the registry, address assignment, command templating, URLs, Caddyfile generation, and the control
-panel's logic (reading docker's output, project states, the launcher). Docker, GTK and a display are not needed.
+panel's logic (reading docker's output, project states, the launcher, log sources and streams). Docker, GTK and a
+display are not needed. The log viewer window has its own tests (`tests/test_logview.py`), which need GTK and
+a display and are skipped without them; on a virtual display:
+`xvfb-run -a dbus-run-session -- python3 -m unittest tests.test_logview`.
 
 Verified by hand on Docker 29 / Compose 5 (2026-11-17), alongside a running ScriptureTips stack:
 - Two copies of `examples/` ran together on 127.0.0.2 and 127.0.0.3. Each published the same web port and

@@ -169,6 +169,12 @@ class Monitor:
             found, error = lpcp.project_launchers(p, settings, ip), None
         except lpcp.LpcpError as e:
             found, error = [lpcp.builtin_launcher(p, settings, ip)], str(e)
+        try:    # its log sources add lpcp's own log viewer icon
+            sources = lpcp.project_log_sources(p, settings, ip)
+        except lpcp.LpcpError as e:
+            sources, error = [], error or str(e)
+        if sources:
+            found = found + [lpcp.log_launcher(sources)]
         self._launchers[p.name] = (key, found, error)
         return found, error
 
@@ -297,6 +303,18 @@ def launch(name: str, app: str | None) -> tuple[bool, str]:
         return False, f"{name}: launch failed: {lines[0].removeprefix('error: ') if lines else f'exit {rc}'}"
     url = next((line.strip() for line in stdout.splitlines() if "://" in line), "")
     return True, f"{name}: opened {url}" if url else f"{name}: launched"
+
+
+def open_logs(name: str) -> tuple[bool, str]:
+    """Open the log viewer window for a project (`./dev logview <name>`), detached: it outlives this call and
+    the panel. -> (ok, message)."""
+    cmd = [sys.executable, str(REPO / "dev"), "logview", name]
+    try:
+        subprocess.Popen(cmd, cwd=REPO, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        return False, f"{name}: could not open the log viewer: {e}"
+    return True, f"{name}: opened the log viewer"
 
 
 # --------------------------------------------------------------------------- start/stop

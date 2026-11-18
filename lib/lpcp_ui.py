@@ -404,8 +404,9 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
                 self.launch_box.show_all()
                 self.shown_launchers = tuple(launchers)
             for button, launcher in zip(self.launch_buttons, launchers):
-                button.set_sensitive(running)
-                tip = launcher.title if running else f"{launcher.title}\n(start the project first)"
+                usable = running or launcher.viewer     # logs can be read while the project is stopped
+                button.set_sensitive(usable)
+                tip = launcher.title if usable else f"{launcher.title}\n(start the project first)"
                 if error and launcher.builtin:
                     tip += f"\nIts own launchers can't be read: {error}"
                 button.set_tooltip_text(tip)
@@ -681,7 +682,10 @@ def build_classes(Gdk, Gio, GLib, Gtk) -> None:
             """A launch icon: run its launcher off the UI thread. Success needs no message (the browser opens); a
             failure is a notification."""
             def work():
-                ok, message = mon.launch(name, None if launcher.builtin else launcher.app)
+                if launcher.viewer:
+                    ok, message = mon.open_logs(name)
+                else:
+                    ok, message = mon.launch(name, None if launcher.builtin else launcher.app)
                 if not ok:
                     GLib.idle_add(self.notify, message, "lpcp-launch")
             threading.Thread(target=work, daemon=True).start()

@@ -75,6 +75,8 @@ They can't collide, because they were never in the same place.
   | 🟡 | `config` | settings or an admin area |
   | ⚪ | `tool` | a shell or any other dev tool |
 
+- **One log viewer for every project.** A project lists its log files and streams (`./dev config.logs`), and a
+  logs icon opens them in one window: filter with a regular expression, find, pause, follow, switch source.
 - **Live CPU and memory** for each project, summed over all of its containers.
 - **A tray icon** (Linux Mint, via XApp): the window drops from the icon like a menu and hides again on the
   next click. While it's hidden it makes no docker calls at all.

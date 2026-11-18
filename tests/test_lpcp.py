@@ -281,5 +281,90 @@ class Launchers(unittest.TestCase):
                 lpcp.launch(p, reg, "data")      # no launchers: no apps to choose from
 
 
+class LogSources(unittest.TestCase):
+    """A project's logs come from its `./dev config.logs`; ./dev logs reads them with --list, --source, --grep."""
+
+    def project(self, script):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        if script is not None:
+            (d / "dev").write_text("#!/usr/bin/env bash\n" + script)
+            (d / "dev").chmod(0o755)
+        return lpcp.Project("blog", d, "blog.localhost")
+
+    SCRIPT = ('[[ "$1" == config.logs ]] || exit 2\n'
+              'cat <<\'EOF\'\n'
+              '[{"id":"app","title":"App","cmd":"printf \'GET /a 200\\\\nPOST /b 500\\\\nget /c 200\\\\n\'"},\n'
+              ' {"id":"err","title":"Errors","file":"error.log"}]\n'
+              'EOF\n')
+
+    def test_from_the_project(self):
+        p = self.project(self.SCRIPT)
+        sources = lpcp.project_log_sources(p, dict(lpcp.DEFAULTS), "127.0.0.2")
+        self.assertEqual([(s.id, s.kind) for s in sources], [("app", "cmd"), ("err", "file")])
+        self.assertEqual(lpcp.log_launcher(sources),
+                         lpcp.Launcher(None, "View logs (app, err)", kind="logs", viewer=True))
+
+    def test_none_when_not_provided(self):
+        for script in (None, 'echo "usage: ./dev up" >&2; exit 1\n', "exit 2\n"):
+            with self.subTest(script=script):
+                self.assertEqual(lpcp.project_log_sources(self.project(script), dict(lpcp.DEFAULTS)), [])
+
+    def test_invalid_output_is_an_error(self):
+        for out in ("not json", "[]", '[{"id":"a","title":"A"}]'):
+            with self.subTest(out=out), self.assertRaises(lpcp.LpcpError):
+                lpcp.project_log_sources(self.project(f"echo '{out}'\n"), dict(lpcp.DEFAULTS))
+
+    def test_pick(self):
+        p = self.project(None)
+        sources = lpcp.lpcp_logs.parse_log_sources('[{"id":"a","title":"A","cmd":"x"},{"id":"b","title":"B","cmd":"y"}]')
+        self.assertEqual(lpcp.pick_log_source(p, sources, None).id, "a")
+        self.assertEqual(lpcp.pick_log_source(p, sources, "b").id, "b")
+        with self.assertRaises(lpcp.LpcpError) as e:
+            lpcp.pick_log_source(p, sources, "c")
+        self.assertIn("choose from: a, b", str(e.exception))
+
+    def run_logs(self, p, **opts):
+        import contextlib
+        import io
+        from types import SimpleNamespace
+        from unittest import mock
+        args = SimpleNamespace(site="blog", list=False, source=None, grep=None, exclude=None, ignore_case=False)
+        vars(args).update(opts)
+        reg = lpcp.Registry(projects={"blog": p})
+        out = io.StringIO()
+        with mock.patch.object(lpcp, "load_addresses", lambda: {}), contextlib.redirect_stdout(out):
+            rc = lpcp.cmd_logs(reg, args)
+        return rc, out.getvalue()
+
+    def test_logs_list_and_filter(self):
+        p = self.project(self.SCRIPT)
+        rc, out = self.run_logs(p, list=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("app  cmd   App", out)
+        self.assertIn("err  file  Errors  (error.log)", out)
+        self.assertEqual(self.run_logs(p, source="app")[1], "GET /a 200\nPOST /b 500\nget /c 200\n")
+        self.assertEqual(self.run_logs(p, grep="/a|/b", exclude="POST")[1], "GET /a 200\n")
+        self.assertEqual(self.run_logs(p, grep="GET", ignore_case=True)[1], "GET /a 200\nget /c 200\n")
+        self.assertEqual(self.run_logs(p, grep="GET")[1], "GET /a 200\n")
+        with self.assertRaises(lpcp.LpcpError):
+            self.run_logs(p, source="nope")
+        with self.assertRaises(lpcp.LpcpError):
+            self.run_logs(p, grep="(")
+
+    def test_logs_without_sources(self):
+        with self.assertRaises(lpcp.LpcpError):
+            self.run_logs(self.project(None), list=True)
+
+    def test_plain_logs_is_still_the_projects_own_command(self):
+        from unittest import mock
+        p = self.project(None)
+        with mock.patch.object(lpcp, "run_project", return_value=0) as run:
+            self.assertEqual(self.run_logs(p)[0], 0)
+        self.assertEqual(run.call_args.args[1], p.logs)
+
+
 if __name__ == "__main__":
     unittest.main()

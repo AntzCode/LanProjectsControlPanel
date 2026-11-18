@@ -1,6 +1,6 @@
 ---
 name: lpcp-docker-projects
-description: Make a docker/compose project compatible with LanProjectsControlPanel (lpcp), so several projects can run at once on one machine without port conflicts. Use when asked to make a project run side by side with others, to fix port collisions between local projects (web, database or other ports), to add `--bind`, `--lan` or `--host` options to a project's `./dev`, to add `./dev launch` or `./dev config.*` keys such as `config.launchers` (launch buttons in the panel), to register a project with the control panel, or when you see a repo with a `./dev up` script and ports published on 127.0.0.1 or 0.0.0.0.
+description: Make a docker/compose project compatible with LanProjectsControlPanel (lpcp), so several projects can run at once on one machine without port conflicts. Use when asked to make a project run side by side with others, to fix port collisions between local projects (web, database or other ports), to add `--bind`, `--lan` or `--host` options to a project's `./dev`, to add `./dev launch` or `./dev config.*` keys such as `config.launchers` (launch buttons in the panel), `config.logs` (log sources for lpcp's log viewer), to register a project with the control panel, or when you see a repo with a `./dev up` script and ports published on 127.0.0.1 or 0.0.0.0.
 ---
 
 # Making a docker project work with LanProjectsControlPanel (lpcp)
@@ -92,7 +92,8 @@ About names and the hosts file:
 5. **Launchers:** add `launch` and `config.launchers` to `./dev` (see "Launchers" below). Choose the
    launchers from what the project serves: the site itself, a mail catcher, an admin area, a data or API
    browser, docs. Give each a `class` (web, mail, db, logs, config, tool) so its icon says what it opens. The
-   first is the default. If the project has no `./dev`, skip this: lpcp falls back to its own URL.
+   first is the default. If the project has no `./dev`, skip this: lpcp falls back to its own URL. If the
+   project writes logs, also add `config.logs` (see "Logs" below).
 6. **Private ports** (database, internal API, mail catcher) use `${PRIVATE_BIND:-127.0.0.1}` instead of
    `${BIND...}`. `./dev` sets PRIVATE_BIND only when `--bind` is another loopback address (127.*), so private
    ports move with the project under lpcp (no collisions) but never onto the network with `--lan` or a LAN
@@ -141,7 +142,7 @@ A full reference script and compose file are in `examples/` in the lpcp repo.
 
 ## Config API
 
-`./dev config.<key>` is how a project describes itself to lpcp. `config.launchers` is the first key; later
+`./dev config.<key>` is how a project describes itself to lpcp. `config.launchers` and `config.logs` are the keys so far; later
 keys will cover things like branding color, logo and short name. Every key follows the same rules:
 
 - It prints one JSON value on stdout and exits 0. Nothing else goes to stdout (messages go to stderr).
@@ -262,6 +263,50 @@ In the command dispatch, next to `up` and `down`:
 
 If the project's `./dev` is not bash, implement the same contract in its language.
 
+## Logs
+
+A project lists its logs with `./dev config.logs`, and lpcp's log viewer shows them with one interface (filter,
+find, pause, follow), whether a source is a stream or a file. The viewer is a window opened by the logs icon on the
+project's row or by `./dev logview <site>`; it works while the project is stopped.
+
+`./dev config.logs` follows the Config API rules and prints a JSON array:
+
+```json
+[{"id":"containers","title":"All containers","cmd":"docker compose logs -f --tail=200"},
+ {"id":"error","title":"Apache error log","file":"data/logs/error.log"}]
+```
+
+- `id`: lowercase letters, digits and dashes, unique. `title`: shown in the viewer's source selector. The first
+  entry is the one the viewer opens on.
+- Exactly one of `cmd` and `file`.
+  - `cmd` is a shell command run in the project's directory with the `LPCP_*` variables set. It must write the
+    log to stdout or stderr and keep running (`docker compose logs -f --tail=200`, `journalctl -f`).
+  - `file` is a path relative to the project's directory (or absolute, or `~/...`). lpcp follows it with
+    `tail -F`: it shows the last 500 lines, then new ones, and it copes with a rotated file or one that doesn't
+    exist yet. A big file is never read whole.
+- Choose the sources from what the project writes: the combined container output (`cmd`), plus each log file the
+  app produces (web server error and access logs, the application log). **Use the paths the container really
+  writes to**, in a folder mounted into the project; read the web server and app config, don't guess.
+- A project with no logs doesn't add the key.
+
+```bash
+config_logs() {
+  cat <<'EOF'
+[{"id":"containers","title":"All containers","cmd":"docker compose logs -f --tail=200"},
+ {"id":"error","title":"Apache error log","file":"data/logs/error.log"}]
+EOF
+}
+```
+
+and in the command dispatch, before the `config.*` catch-all:
+
+```bash
+  config.logs)      config_logs ;;
+```
+
+From the lpcp repo, `./dev logs <site> --list` shows a project's sources, and `./dev logs <site> --source ID
+[-e PATTERN] [-v PATTERN] [-i]` prints one, filtered like `grep -E` / `grep -v`, until Ctrl-C.
+
 ## Verify
 
 Do all of these. Leave nothing running that wasn't running before.
@@ -291,7 +336,13 @@ Do all of these. Leave nothing running that wasn't running before.
    `./dev launch --print --app=<app>` for each launcher print the expected URLs; `--app=nope` exits 2;
    `./dev launch` (without `--print`) exits 1 with a message. With the project up, `curl -ks` each printed URL
    gets the app. Don't open browser windows to test.
-8. `git diff` in the project should show only the port addresses, the hostname variable, the option parsing,
+8. **Logs**, if the project has `config.logs`, with the project stopped: `./dev config.logs | python3 -m json.tool`
+   is valid JSON, each entry has an `id`, a `title` and exactly one of `cmd` or `file`, and nothing else is
+   printed. Each `file` is where the project really writes it (`ls` it after `./dev up`). From the lpcp repo,
+   with the project registered: `./dev logs <name> --list`, and `./dev logs <name> --source <id> -e <pattern>`
+   prints the matching lines (end it with Ctrl-C or `kill`, then `pgrep -af 'tail -n 500 -F|logs -f'` shows
+   nothing left behind). Don't open the viewer window to test.
+9. `git diff` in the project should show only the port addresses, the hostname variable, the option parsing,
    the launch and config commands, and docs.
 
 ## Don't
